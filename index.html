@@ -10,6 +10,7 @@
 <script src="https://cdn.jsdelivr.net/npm/firebase@10.12.0/firebase-app-compat.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/firebase@10.12.0/firebase-auth-compat.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/firebase@10.12.0/firebase-firestore-compat.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/firebase@10.12.0/firebase-messaging-compat.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
 :root{
@@ -43,7 +44,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Barlow
 /* ===== TOPBAR ===== */
 #topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:12px 18px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;min-height:52px}
 .tb-left{display:flex;align-items:center;gap:10px}
-.tb-back{background:none;border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:5px 12px;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:13px;cursor:pointer;letter-spacing:1px;display:none}
+.tb-back{display:none!important}
 .tb-back:hover{border-color:var(--accent);color:var(--accent)}
 .tb-title{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:20px;text-transform:uppercase;letter-spacing:1px;color:var(--accent)}
 .tb-right{display:flex;align-items:center;gap:8px}
@@ -80,6 +81,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Barlow
 .nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border:none;background:transparent;color:var(--muted);font-family:'Barlow Condensed',sans-serif;font-size:9px;letter-spacing:.5px;text-transform:uppercase;cursor:pointer;transition:color .2s}
 .nav-btn.active{color:var(--accent)}
 .nav-btn svg{width:20px;height:20px}
+.nav-btn-home{flex:1.4;background:var(--surface2);border-right:1px solid var(--border)}
+.nav-btn-home svg{width:24px;height:24px}
+.nav-btn-home span{font-size:10px;font-weight:700;letter-spacing:1px}
+.nav-btn-home.active{color:var(--accent);background:#c8f00015}
 
 /* ===== PAGES ===== */
 .page{display:none}
@@ -257,6 +262,111 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Barlow
 </style>
 </head>
 <body>
+<script>
+// Auth functions - fully implemented here so they work immediately
+function switchAuthTab(t){
+  var l=document.getElementById('auth-login'),r=document.getElementById('auth-register');
+  if(l)l.style.display=t==='login'?'block':'none';
+  if(r)r.style.display=t==='register'?'block':'none';
+  document.querySelectorAll('.auth-tab').forEach(function(el,i){el.classList.toggle('active',(i===0&&t==='login')||(i===1&&t==='register'));});
+}
+function doLogin(){
+  var em=document.getElementById('login_email').value.trim();
+  var pw=document.getElementById('login_pass').value;
+  if(!em||!pw){showToast2('Wpisz e-mail i hasło',true);return;}
+  var btn=document.getElementById('btn-login');
+  btn.disabled=true;btn.textContent='Loguję...';
+  var attempt=function(){
+    if(typeof firebase==='undefined'||!firebase.apps||!firebase.apps.length){setTimeout(attempt,300);return;}
+    firebase.auth().signInWithEmailAndPassword(em,pw)
+    .catch(function(e){
+      var m={'auth/invalid-credential':'Błędny e-mail lub hasło','auth/wrong-password':'Błędny e-mail lub hasło','auth/user-not-found':'Nie znaleziono użytkownika','auth/too-many-requests':'Za dużo prób. Spróbuj później','auth/network-request-failed':'Brak internetu','auth/invalid-email':'Nieprawidłowy e-mail'};
+      showToast2(m[e.code]||e.message,true);
+      btn.disabled=false;btn.textContent='Zaloguj się';
+    });
+  };
+  attempt();
+}
+function doRegister(){
+  var fn=document.getElementById('reg_fn').value.trim();
+  var ln=document.getElementById('reg_ln').value.trim();
+  var em=document.getElementById('reg_em').value.trim();
+  var pw=document.getElementById('reg_pw').value;
+  var pw2=document.getElementById('reg_pw2').value;
+  if(!fn||!ln||!em||!pw){showToast2('Wypełnij wszystkie pola',true);return;}
+  if(pw!==pw2){showToast2('Hasła nie są identyczne',true);return;}
+  if(pw.length<6){showToast2('Hasło min. 6 znaków',true);return;}
+  var btn=document.getElementById('btn-register');
+  btn.disabled=true;btn.textContent='Tworzę...';
+  var attempt=function(){
+    if(typeof firebase==='undefined'||!firebase.apps||!firebase.apps.length){setTimeout(attempt,300);return;}
+    firebase.auth().createUserWithEmailAndPassword(em,pw)
+    .then(function(c){
+      return c.user.updateProfile({displayName:fn+' '+ln}).then(function(){
+        return firebase.firestore().collection('users').doc(c.user.uid).set({
+          firstName:fn,lastName:ln,email:em,role:'pending',
+          createdAt:firebase.firestore.FieldValue.serverTimestamp()
+        });
+      });
+    })
+    .then(function(){
+      showToast2('Konto założone! Poczekaj na zatwierdzenie przez admina.');
+      btn.disabled=false;btn.textContent='Załóż konto';
+      switchAuthTab('login');
+    })
+    .catch(function(e){
+      var m={'auth/email-already-in-use':'Ten e-mail jest już zajęty','auth/invalid-email':'Nieprawidłowy e-mail','auth/network-request-failed':'Brak internetu'};
+      showToast2(m[e.code]||e.message,true);
+      btn.disabled=false;btn.textContent='Załóż konto';
+    });
+  };
+  attempt();
+}
+// Simple toast for auth screen (before app loads)
+function showToast2(msg,err){
+  var old=document.querySelector('.toast');if(old)old.remove();
+  var t=document.createElement('div');
+  t.className='toast'+(err?' toast-err':'');
+  t.textContent=msg;document.body.appendChild(t);
+  setTimeout(function(){t.style.opacity='0';setTimeout(function(){if(t.parentNode)t.remove();},300);},3000);
+}
+// All other functions - delegate to main script implementations
+function swPay(t){if(window.swPay2)window.swPay2(t);}
+function sendInvoice(){if(window.sendInvoice2)window.sendInvoice2();}
+function addOrder(){if(window.addOrder2)window.addOrder2();}
+function addNote(){if(window.addNote2)window.addNote2();}
+function startWork(){if(window.startWork2)window.startWork2();}
+function endWork(){if(window.endWork2)window.endWork2();}
+function connectGcal(){if(window.connectGcal2)window.connectGcal2();}
+function openAddEv(d){if(window.openAddEv2)window.openAddEv2(d);}
+function closeEvModal(){var m=document.getElementById('ev-modal');if(m)m.classList.remove('open');}
+function submitEvent(){if(window.submitEvent2)window.submitEvent2();}
+function goHome(){if(window.goHome2)window.goHome2();}
+function showPage(n){if(window.showPage2)window.showPage2(n);}
+function swAdm(t){if(window.swAdm2)window.swAdm2(t);}
+function addVideo(){if(window.addVideo2)window.addVideo2();}
+function calPrev(){if(window.calPrev2)window.calPrev2();}
+function calNext(){if(window.calNext2)window.calNext2();}
+function selDay(d){if(window.selDay2)window.selDay2(d);}
+function backToCal(){if(window.backToCal2)window.backToCal2();}
+function editEv(id){if(window.editEv2)window.editEv2(id);}
+function delEv(id,d){if(window.delEv2)window.delEv2(id,d);}
+function updOrd(id,st){if(window.updOrd2)window.updOrd2(id,st);}
+function delOrd(id){if(window.delOrd2)window.delOrd2(id);}
+function delNote(id){if(window.delNote2)window.delNote2(id);}
+function togRole(uid,r){if(window.togRole2)window.togRole2(uid,r);}
+function delUD(uid){if(window.delUD2)window.delUD2(uid);}
+function markInv(id){if(window.markInv2)window.markInv2(id);}
+function delVid(id){if(window.delVid2)window.delVid2(id);}
+function approveUser(uid){if(window.approveUser2)window.approveUser2(uid);}
+function loadCennik(){if(window.loadCennik2)window.loadCennik2();}
+function editCennikCat(id){if(window.editCennikCat2)window.editCennikCat2(id);}
+function addCennikCat(){if(window.addCennikCat2)window.addCennikCat2();}
+function addCennikItem(){if(window.addCennikItem2)window.addCennikItem2();}
+function removeCennikItem(i){if(window.removeCennikItem2)window.removeCennikItem2(i);}
+function saveCennikCat(id){if(window.saveCennikCat2)window.saveCennikCat2(id);}
+function deleteCennikCat(id){if(window.deleteCennikCat2)window.deleteCennikCat2(id);}
+</script>
 
 <!-- AUTH -->
 <div id="auth-screen">
@@ -403,6 +513,11 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Barlow
     </div>
 
     <!-- ADMIN -->
+    <div class="page" id="page-cennik">
+      <div class="section-title">Cennik</div>
+      <div id="cennik-content"><div class="empty">Ładowanie...</div></div>
+    </div>
+
     <div class="page" id="page-admin">
       <div class="section-title">Panel Admina</div>
       <div class="adm-tabs">
@@ -481,6 +596,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Barlow
           <label class="cb-item"><input type="checkbox" value="Puchar"><span>🏆 Puchar</span></label>
           <label class="cb-item"><input type="checkbox" value="Quady"><span>🏍️ Quady</span></label>
           <label class="cb-item"><input type="checkbox" value="Strzelnica"><span>🎯 Strzelnica</span></label>
+          <label class="cb-item"><input type="checkbox" value="Fotograf"><span>📸 Fotograf</span></label>
         </div>
       </div>
       <div class="fgrp"><label class="fl2">Uwagi</label><textarea class="fta" id="ev_notes" placeholder="Dodatkowe informacje..."></textarea></div>
@@ -543,8 +659,16 @@ getAuth().onAuthStateChanged(async function(user){
     cu=user;
     try{
       var s=await getDb().collection('users').doc(user.uid).get();
-      if(s.exists){cud=s.data();isAdmin=cud.role==='admin';showApp();}
-      else{showToast('Brak profilu — skontaktuj się z adminem.',true);await getAuth().signOut();}
+      if(s.exists){
+        cud=s.data();
+        if(cud.role==='pending'){
+          showToast('Konto czeka na zatwierdzenie przez administratora.',true);
+          await getAuth().signOut();
+          return;
+        }
+        isAdmin=cud.role==='admin';
+        showApp();
+      }else{showToast('Brak profilu — skontaktuj się z adminem.',true);await getAuth().signOut();}
     }catch(e){showToast('Błąd: '+e.message,true);}
   }else{
     cu=null;cud=null;isAdmin=false;
@@ -559,7 +683,7 @@ function switchAuthTab(t){
   document.getElementById('auth-register').style.display=t==='register'?'block':'none';
   document.querySelectorAll('.auth-tab').forEach(function(el,i){el.classList.toggle('active',(i===0&&t==='login')||(i===1&&t==='register'));});
 }
-async function doRegister(){
+async function doRegister2(){
   var fn=gi('reg_fn'),ln=gi('reg_ln'),em=gi('reg_em'),pw=document.getElementById('reg_pw').value,pw2=document.getElementById('reg_pw2').value;
   if(!fn||!ln||!em||!pw)return showToast('Wypełnij wszystkie pola',true);
   if(pw!==pw2)return showToast('Hasła nie są identyczne',true);
@@ -568,11 +692,11 @@ async function doRegister(){
   try{
     var c=await getAuth().createUserWithEmailAndPassword(em,pw);
     await c.user.updateProfile({displayName:fn+' '+ln});
-    await getDb().collection('users').doc(c.user.uid).set({firstName:fn,lastName:ln,email:em,role:'instructor',createdAt:firebase.firestore.FieldValue.serverTimestamp()});
-    showToast('Konto utworzone! Witaj '+fn+'!');
+    await getDb().collection('users').doc(c.user.uid).set({firstName:fn,lastName:ln,email:em,role:'pending',createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+    showToast('Konto założone! Poczekaj na zatwierdzenie przez admina.');
   }catch(e){showToast(fbE(e),true);btn.disabled=false;btn.textContent='Załóż konto';}
 }
-async function doLogin(){
+async function doLogin2(){
   var em=gi('login_email'),pw=document.getElementById('login_pass').value;
   if(!em||!pw)return showToast('Wpisz e-mail i hasło',true);
   var btn=document.getElementById('btn-login');btn.disabled=true;btn.textContent='Loguję...';
@@ -595,7 +719,23 @@ function showApp(){
   goHome();
   startClock();
   initCheckboxes();
-  if(isAdmin) setTimeout(initGoogleAuth, 1500);
+  if(isAdmin) {
+    setTimeout(function(){ initGoogleAuth(true); }, 1500);
+    setTimeout(function(){
+      initMessaging();
+      requestNotificationPermission();
+      listenForNotifications();
+    }, 2000);
+  } else {
+    // Instructors also register for notifications
+    setTimeout(function(){
+      initMessaging();
+      requestNotificationPermission();
+    }, 2000);
+  }
+  _registerFunctions();
+  // Auto-seed training videos if empty
+  seedVideos();
 }
 
 // ===== HOME SCREEN =====
@@ -606,6 +746,7 @@ var HOME_TILES=[
   {id:'payments',name:'Płatności',desc:'Karta, gotówka, faktury',icon:'💳',color:'#f0a000'},
   {id:'orders',name:'Zamówienia',desc:'Zgłoś braki sprzętu',icon:'📦',color:'#00ccaa'},
   {id:'notes',name:'Uwagi',desc:'Wiadomości dla zespołu',icon:'💬',color:'#ff8844'},
+  {id:'cennik',name:'Cennik',desc:'Ceny usług i pakietów',icon:'💰',color:'#22c55e'},
 ];
 
 function goHome(){
@@ -640,7 +781,7 @@ function goHome(){
 }
 
 // ===== NAV =====
-var PAGE_TITLES={schedule:'Rozkład dnia',worktime:'Czas pracy',videos:'Filmy szkoleniowe',payments:'Płatności',orders:'Zamówienia',notes:'Uwagi',admin:'Panel Admina'};
+var PAGE_TITLES={schedule:'Rozkład dnia',worktime:'Czas pracy',videos:'Filmy szkoleniowe',payments:'Płatności',orders:'Zamówienia',notes:'Uwagi',cennik:'Cennik',admin:'Panel Admina'};
 var NAV_ICONS={
   schedule:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
   worktime:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
@@ -648,20 +789,24 @@ var NAV_ICONS={
   payments:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>',
   orders:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>',
   notes:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
+  cennik:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>',
   admin:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>'
 };
 
 function buildNav(activePage){
-  var pages=['schedule','worktime','videos','payments','orders','notes'];
+  var pages=['schedule','worktime','videos','payments','orders','notes','cennik'];
   if(isAdmin)pages.push('admin');
   var nav=document.getElementById('nav');
-  nav.innerHTML=pages.map(function(p){
-    return '<button class="nav-btn'+(p===activePage?' active':'')+'" onclick="showPage(\''+p+'\')" id="nb-'+p+'">'+
-      (NAV_ICONS[p]||'')+'<span>'+(p==='schedule'?'Rozkład':p==='worktime'?'Praca':p==='videos'?'Filmy':p==='payments'?'Płatności':p==='orders'?'Zamów.':p==='notes'?'Uwagi':'Admin')+'</span></button>';
+  var homeIcon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>';
+  var html='<button class="nav-btn nav-btn-home'+(activePage==='home'?' active':'')+'" onclick="goHome()">'+homeIcon+'<span>Menu</span></button>';
+  html+=pages.map(function(p){
+    return '<button class="nav-btn'+(p===activePage?' active':'')+'" onclick="showPage2(''+p+'')" id="nb-'+p+'">'+
+      (NAV_ICONS[p]||'')+'<span>'+(p==='schedule'?'Rozkład':p==='worktime'?'Praca':p==='videos'?'Filmy':p==='payments'?'Płatn.':p==='orders'?'Zamów.':p==='notes'?'Uwagi':p==='cennik'?'Cennik':'Admin')+'</span></button>';
   }).join('');
+  nav.innerHTML=html;
 }
 
-function showPage(name){
+function showPage3(name){
   document.getElementById('home-screen').classList.remove('active');
   document.querySelectorAll('.page').forEach(function(p){p.classList.remove('active');});
   var pg=document.getElementById('page-'+name);if(pg)pg.classList.add('active');
@@ -675,6 +820,7 @@ function showPage(name){
   if(name==='videos')loadVideos();
   if(name==='orders')loadOrders();
   if(name==='notes')loadNotes();
+  if(name==='cennik'){if(window.loadCennik2)window.loadCennik2();else loadCennik();}
   if(name==='admin'&&isAdmin)swAdm('adm-shifts');
 }
 
@@ -719,11 +865,12 @@ function renderCal(){
       h+='<div class="'+cls+'"'+(ds?' onclick="selDay(\''+ds+'\')"':'')+'><div class="cal-dn">'+c.d+'</div></div>';
     });
     h+='</div>';
-    if(isAdmin){
-    h+='<div style="display:flex;gap:10px;margin-top:4px">';
-    h+='<button class="btn-full" onclick="openAddEv(null)" style="flex:2">+ Dodaj rezerwację</button>';
-    h+='<button onclick="connectGcal()" style="flex:1;padding:13px;border-radius:var(--radius);border:1px solid #4285f4;background:#4285f411;color:#4285f4;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:14px;cursor:pointer;letter-spacing:1px;white-space:nowrap">'+(gcalToken?'✅ GCal':'📅 GCal')+'</button>';
-    h+='</div>';
+      if(isAdmin){
+    var gcalLbl = gcalToken ? '✅ GCal' : '📅 GCal';
+    h += '<div style="display:flex;gap:10px;margin-top:4px">';
+    h += '<button class="btn-full" onclick="openAddEv(null)" style="flex:2">+ Dodaj rezerwację</button>';
+    h += '<button onclick="connectGcal()" style="flex:1;padding:13px;border-radius:14px;border:1px solid #4285f4;background:#4285f411;color:#4285f4;font-weight:700;font-size:14px;cursor:pointer">' + gcalLbl + '</button>';
+    h += '</div>';
   }
     document.getElementById('schedule-view').innerHTML=h;
   });
@@ -834,7 +981,7 @@ async function editEv(id){
 
 function closeEvModal(){document.getElementById('ev-modal').classList.remove('open');}
 
-async function submitEvent(){
+async function submitEvent3(){
   var date=document.getElementById('ev_date').value;
   var start=document.getElementById('ev_start').value;
   var org=gi('ev_org');
@@ -848,12 +995,10 @@ async function submitEvent(){
     if(editEvId){
       await getDb().collection('schedule').doc(editEvId).update(data);
       showToast('Zaktualizowano!');
-      if(gcalToken) await updateGcalEvent(data, editEvId);
     }else{
       data.createdAt=firebase.firestore.FieldValue.serverTimestamp();
-      var ref=await getDb().collection('schedule').add(data);
+      await getDb().collection('schedule').add(data);
       showToast('Rezerwacja dodana!');
-      if(gcalToken) await createGcalEvent(data, ref.id);
     }
     closeEvModal();
     if(selDate)loadDayEvs(selDate);
@@ -864,7 +1009,6 @@ async function submitEvent(){
 
 async function delEv(id,date){
   if(!confirm('Usunąć rezerwację?'))return;
-  if(gcalToken) await deleteGcalEvent(id);
   await getDb().collection('schedule').doc(id).delete();
   showToast('Usunięto');
   if(date)loadDayEvs(date);
@@ -967,11 +1111,11 @@ function openVid(t,d,u){
 }
 
 // ===== PAYMENTS =====
-function swPay(tab){
+function swPayMain(tab){
   ['card','cash','invoice'].forEach(function(t){var el=document.getElementById('pay-'+t);if(el)el.style.display=t===tab?'block':'none';});
   document.querySelectorAll('.ptab').forEach(function(el,i){el.classList.toggle('active',['card','cash','invoice'][i]===tab);});
 }
-async function sendInvoice(){
+async function sendInvoice3(){
   var data={name:gi('inv_name'),nip:gi('inv_nip'),addr:gi('inv_addr'),zip:gi('inv_zip'),city:gi('inv_city'),amount:gi('inv_amount'),desc:gi('inv_desc'),email:gi('inv_email')};
   if(!data.name||!data.nip||!data.amount)return showToast('Wypełnij nazwę, NIP i kwotę!',true);
   try{await getDb().collection('invoiceRequests').add(Object.assign(data,{submittedBy:cud.firstName+' '+cud.lastName,userId:cu.uid,status:'pending',createdAt:firebase.firestore.FieldValue.serverTimestamp()}));showToast('Wysłano!');['inv_name','inv_nip','inv_addr','inv_zip','inv_city','inv_amount','inv_desc','inv_email'].forEach(function(id){document.getElementById(id).value='';});}
@@ -989,7 +1133,7 @@ function loadOrders(){
     }).join('');
   });aL.push(unsub);
 }
-async function addOrder(){var n=gi('ord-inp'),note=gi('ord-note');if(!n)return showToast('Wpisz czego brakuje',true);await getDb().collection('orders').add({name:n,note:note,userId:cu.uid,addedBy:cud.firstName+' '+cud.lastName,status:'new',createdAt:firebase.firestore.FieldValue.serverTimestamp()});document.getElementById('ord-inp').value='';document.getElementById('ord-note').value='';showToast('Dodano!');}
+async function addOrder3(){var n=gi('ord-inp'),note=gi('ord-note');if(!n)return showToast('Wpisz czego brakuje',true);await getDb().collection('orders').add({name:n,note:note,userId:cu.uid,addedBy:cud.firstName+' '+cud.lastName,status:'new',createdAt:firebase.firestore.FieldValue.serverTimestamp()});document.getElementById('ord-inp').value='';document.getElementById('ord-note').value='';showToast('Dodano!');sendPushToAdmin('📦 Nowe zamówienie', cud.firstName+' '+cud.lastName+': '+n);}
 async function updOrd(id,st){await getDb().collection('orders').doc(id).update({status:st});showToast(st==='inprogress'?'W realizacji':'Zrealizowane ✓');}
 async function delOrd(id){if(!confirm('Usunąć?'))return;await getDb().collection('orders').doc(id).delete();}
 
@@ -1002,7 +1146,7 @@ function loadNotes(){
     list.innerHTML=notes.map(function(n){var cd=isAdmin||n.userId===cu.uid;return '<div class="note-card"><div class="note-hdr"><span class="note-auth">'+(n.author||'?')+'</span><span class="note-time">'+fmtD(n.createdAt)+'</span>'+(cd?'<button class="bic" onclick="delNote(\''+n.id+'\')">✕</button>':'')+'</div><div class="note-body">'+n.text+'</div></div>';}).join('');
   });aL.push(unsub);
 }
-async function addNote(){var t=gi('note-inp');if(!t)return showToast('Wpisz treść',true);await getDb().collection('notes').add({text:t,userId:cu.uid,author:cud.firstName+' '+cud.lastName,createdAt:firebase.firestore.FieldValue.serverTimestamp()});document.getElementById('note-inp').value='';showToast('Uwaga dodana!');}
+async function addNote3(){var t=gi('note-inp');if(!t)return showToast('Wpisz treść',true);await getDb().collection('notes').add({text:t,userId:cu.uid,author:cud.firstName+' '+cud.lastName,createdAt:firebase.firestore.FieldValue.serverTimestamp()});document.getElementById('note-inp').value='';showToast('Uwaga dodana!');if(!isAdmin)sendPushToAdmin('💬 Nowa uwaga', cud.firstName+' '+cud.lastName+': '+t.substring(0,80));}
 async function delNote(id){if(!confirm('Usunąć?'))return;await getDb().collection('notes').doc(id).delete();}
 
 // ===== ADMIN =====
@@ -1022,7 +1166,7 @@ async function loadAdmShifts(){
   if(!shifts.length){list.innerHTML='<div class="empty">Brak zmian</div>';return;}
   var bu={};shifts.forEach(function(s){if(!bu[s.userName])bu[s.userName]=[];bu[s.userName].push(s);});
   list.innerHTML=Object.entries(bu).map(function(e){var n=e[0],us=e[1];var tot=us.filter(function(s){return s.status==='done';}).reduce(function(a,s){return a+(s.duration||0);},0);var h=Math.floor(tot/3600),m=Math.floor((tot%3600)/60);
-    return '<div class="adm-row" style="flex-direction:column;align-items:flex-start;gap:8px"><div style="display:flex;justify-content:space-between;width:100%"><div class="adm-rt">'+n+'</div><span style="color:var(--accent);font-family:\'Barlow Condensed\',sans-serif;font-weight:700">'+h+'h '+m+'m</span></div>'+us.map(function(s){var t=s.startTime?s.startTime.toDate().toLocaleString('pl-PL',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'?';var d=s.status==='done'?Math.floor((s.duration||0)/3600)+'h '+Math.floor(((s.duration||0)%3600)/60)+'m':'🔴 aktywna';return '<div class="adm-rs" style="display:flex;justify-content:space-between;width:100%"><span>'+t+'</span><span>'+d+'</span></div>';}).join('')+'</div>';}).join('');
+    return '<div class="adm-row" style="flex-direction:column;align-items:flex-start;gap:8px"><div style="display:flex;justify-content:space-between;width:100%"><div class="adm-rt">'+n+'</div><span style="color:var(--accent);font-weight:700;font-size:18px">'+h+'h '+m+'m</span></div>'+us.map(function(s){var t=s.startTime?s.startTime.toDate().toLocaleString('pl-PL',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'?';var d=s.status==='done'?Math.floor((s.duration||0)/3600)+'h '+Math.floor(((s.duration||0)%3600)/60)+'m':'🔴 aktywna';return '<div class="adm-rs" style="display:flex;justify-content:space-between;width:100%"><span>'+t+'</span><span>'+d+'</span></div>';}).join('')+'</div>';}).join('');
 }
 async function loadAdmVids(){
   var snap=await getDb().collection('videos').orderBy('order').get();
@@ -1030,13 +1174,70 @@ async function loadAdmVids(){
   var list=document.getElementById('adm-videos-list');if(!list)return;
   list.innerHTML=vs.length?vs.map(function(v){return '<div class="adm-row"><div><div class="adm-rt">'+v.title+'</div><div class="adm-rs">'+(v.description||'')+(v.url?' · <a href="'+v.url+'" target="_blank" style="color:var(--accent)">link</a>':'')+'</div></div><button class="btn-sm bsd" onclick="delVid(\''+v.id+'\')">Usuń</button></div>';}).join(''):'<div class="empty">Brak filmów</div>';
 }
-async function addVideo(){var t=gi('vid_title'),d=gi('vid_desc'),u=gi('vid_url'),dur=gi('vid_dur');if(!t)return showToast('Wpisz tytuł',true);var s=await getDb().collection('videos').get();await getDb().collection('videos').add({title:t,description:d,url:u,duration:dur,order:s.size,createdAt:firebase.firestore.FieldValue.serverTimestamp()});showToast('Film dodany!');['vid_title','vid_desc','vid_url','vid_dur'].forEach(function(id){document.getElementById(id).value='';});loadAdmVids();}
+async function addVideo3(){var t=gi('vid_title'),d=gi('vid_desc'),u=gi('vid_url'),dur=gi('vid_dur');if(!t)return showToast('Wpisz tytuł',true);var s=await getDb().collection('videos').get();await getDb().collection('videos').add({title:t,description:d,url:u,duration:dur,order:s.size,createdAt:firebase.firestore.FieldValue.serverTimestamp()});showToast('Film dodany!');['vid_title','vid_desc','vid_url','vid_dur'].forEach(function(id){document.getElementById(id).value='';});loadAdmVids();}
 async function delVid(id){if(!confirm('Usunąć?'))return;await getDb().collection('videos').doc(id).delete();loadAdmVids();}
 async function loadAdmUsers(){
   var snap=await getDb().collection('users').get();
   var users=snap.docs.map(function(d){return Object.assign({id:d.id},d.data());});
+  users.sort(function(a,b){
+    var o={'pending':0,'instructor':1,'admin':2};
+    return (o[a.role]||1)-(o[b.role]||1);
+  });
   var list=document.getElementById('adm-users-list');if(!list)return;
-  list.innerHTML=users.map(function(u){var me=u.id===cu.uid;return '<div class="adm-row"><div><div class="adm-rt">'+u.firstName+' '+u.lastName+'</div><div class="adm-rs">'+u.email+' · <span style="color:'+(u.role==='admin'?'var(--accent)':'var(--muted)')+'>'+(u.role==='admin'?'★ Admin':'Instruktor')+'</span></div></div>'+(!me?'<div style="display:flex;gap:6px"><button class="btn-sm '+(u.role==='admin'?'bsg':'bsw')+'" onclick="togRole(\''+u.id+'\',\''+u.role+'\')">'+(u.role==='admin'?'→ Instr.':'→ Admin')+'</button><button class="btn-sm bsd" onclick="delUD(\''+u.id+'\')">Usuń</button></div>':'<span style="font-size:11px;color:var(--accent)">Ty</span>')+'</div>';}).join('');
+  if(!users.length){list.innerHTML='<div class="empty">Brak użytkowników</div>';return;}
+  list.innerHTML=users.map(function(u){
+    var me=u.id===cu.uid;
+    var role=u.role||'instructor';
+    var roleColor=role==='admin'?'var(--accent)':role==='pending'?'var(--accent3)':'#aaa';
+    var roleLabel=role==='admin'?'★ Admin':role==='pending'?'⏳ Oczekuje na zatwierdzenie':'Instruktor';
+    var html='<div style="background:var(--surface2);border:1px solid '+(role==='pending'?'var(--accent3)':'var(--border)')+';border-radius:12px;padding:14px;margin-bottom:10px">';
+    // Header row
+    html+='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">';
+    html+='<div style="font-weight:700;font-size:17px">'+u.firstName+' '+u.lastName+'</div>';
+    html+='<span style="font-size:11px;font-weight:700;letter-spacing:1px;padding:3px 10px;border-radius:20px;background:'+roleColor+'22;color:'+roleColor+';border:1px solid '+roleColor+'">'+roleLabel+'</span>';
+    html+='</div>';
+    html+='<div style="font-size:13px;color:var(--muted);margin-bottom:10px">'+u.email+'</div>';
+    if(me){
+      html+='<span style="font-size:12px;color:var(--accent)">— to jesteś Ty</span>';
+    } else if(role==='pending'){
+      // Pending - show approve with role selection
+      html+='<div style="background:var(--surface);border-radius:8px;padding:10px;margin-bottom:8px;font-size:13px;color:var(--accent3)">Użytkownik czeka na zatwierdzenie. Wybierz rolę:</div>';
+      html+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
+      html+='<button class="btn-sm bsp" data-uid="'+u.id+'" data-action="approve-instructor">✅ Zatwierdź jako Instruktor</button>';
+      html+='<button class="btn-sm bsw" data-uid="'+u.id+'" data-action="approve-admin">✅ Zatwierdź jako Admin</button>';
+      html+='<button class="btn-sm bsd" data-uid="'+u.id+'" data-action="del">Odrzuć</button>';
+      html+='</div>';
+    } else {
+      html+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
+      if(role==='instructor'){
+        html+='<button class="btn-sm bsw" data-uid="'+u.id+'" data-action="make-admin">→ Zmień na Admin</button>';
+      } else {
+        html+='<button class="btn-sm bsg" data-uid="'+u.id+'" data-action="make-instructor">→ Zmień na Instruktor</button>';
+      }
+      html+='<button class="btn-sm bsd" data-uid="'+u.id+'" data-action="del">Usuń</button>';
+      html+='</div>';
+    }
+    html+='</div>';
+    return html;
+  }).join('');
+
+  // Event delegation - one handler for all buttons
+  list.onclick=function(e){
+    var btn=e.target.closest('[data-action]');
+    if(!btn)return;
+    var uid=btn.getAttribute('data-uid');
+    var action=btn.getAttribute('data-action');
+    if(action==='approve-instructor') approveUser(uid,'instructor');
+    else if(action==='approve-admin') approveUser(uid,'admin');
+    else if(action==='make-admin') togRole(uid,'instructor');
+    else if(action==='make-instructor') togRole(uid,'admin');
+    else if(action==='del') delUD(uid);
+  };
+}
+async function approveUser(uid,role){
+  await getDb().collection('users').doc(uid).update({role:role||'instructor'});
+  showToast('Konto zatwierdzone jako '+(role==='admin'?'Admin':'Instruktor')+'!');
+  loadAdmUsers();
 }
 async function togRole(uid,r){await getDb().collection('users').doc(uid).update({role:r==='admin'?'instructor':'admin'});showToast('Rola zmieniona');loadAdmUsers();}
 async function delUD(uid){if(!confirm('Usunąć?'))return;await getDb().collection('users').doc(uid).delete();showToast('Usunięto');loadAdmUsers();}
@@ -1070,18 +1271,38 @@ var GCAL_MAP = {
 var gcalToken = null;
 var gcalTokenClient = null;
 
-function initGoogleAuth() {
+function initGoogleAuth(autoSync) {
   if (!isAdmin) return;
   gcalTokenClient = google.accounts.oauth2.initTokenClient({
     client_id: GCAL_CLIENT_ID,
     scope: GCAL_SCOPES,
     callback: function(resp) {
-      if (resp.error) { showToast('Błąd Google: ' + resp.error, true); return; }
+      if (resp.error) {
+        if (resp.error !== 'access_denied' && resp.error !== 'user_closed_dialog') {
+          showToast('Błąd Google: ' + resp.error, true);
+        }
+        return;
+      }
       gcalToken = resp.access_token;
-      showToast('✅ Połączono z Google Calendar!');
-      syncFromGcal();
+      if (autoSync) {
+        showToast('🔄 Synchronizuję kalendarz...');
+        syncFromGcal();
+      } else {
+        showToast('✅ Połączono z Google Calendar!');
+        syncFromGcal();
+      }
     }
   });
+  // Try silent login (no popup) - works if user already granted access
+  if (autoSync) {
+    setTimeout(function(){
+      try {
+        gcalTokenClient.requestAccessToken({prompt: ''});
+      } catch(e) {
+        // Silent login failed - user needs to click GCal button manually
+      }
+    }, 500);
+  }
 }
 
 function connectGcal() {
@@ -1177,24 +1398,24 @@ async function syncFromGcal() {
   if (!gcalToken) return;
   showToast('Synchronizuję z Google Calendar...');
   var now = new Date();
-  var from = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-  var to   = new Date(now.getFullYear(), now.getMonth()+3, 0).toISOString();
+  var from = new Date(now.getFullYear(), now.getMonth()-1, 1).toISOString();
+  var to   = new Date(now.getFullYear(), now.getMonth()+6, 0).toISOString();
   var imported = 0;
   for (var type in GCAL_MAP) {
     if (Object.prototype.hasOwnProperty.call(GCAL_MAP, type)) {
       var calId = GCAL_MAP[type];
       // skip duplicates (same calId used for multiple types)
-      var unique = true;
-      for (var t2 in GCAL_MAP) {
-        if (t2 !== type && GCAL_MAP[t2] === calId && Object.keys(GCAL_MAP).indexOf(t2) < Object.keys(GCAL_MAP).indexOf(type)) {
-          unique = false; break;
-        }
+      // skip if this calId was already processed
+      var alreadySeen = false;
+      var keys = Object.keys(GCAL_MAP);
+      for (var ki = 0; ki < keys.indexOf(type); ki++) {
+        if (GCAL_MAP[keys[ki]] === calId) { alreadySeen = true; break; }
       }
-      if (!unique) continue;
+      if (alreadySeen) continue;
       try {
         var url = 'https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(calId) +
           '/events?timeMin=' + encodeURIComponent(from) + '&timeMax=' + encodeURIComponent(to) +
-          '&singleEvents=true&orderBy=startTime&maxResults=100';
+          '&singleEvents=true&orderBy=startTime&maxResults=2500';
         var resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + gcalToken } });
         var data = await resp.json();
         if (!data.items) continue;
@@ -1217,11 +1438,93 @@ async function syncFromGcal() {
           var existing = await getDb().collection('schedule').where('gcalEventId','==',ev.id).get();
           if (!existing.empty) continue;
           // Import
+          var summaryText = (ev.summary || '').trim();
+          var fullDesc = (ev.description || '').replace(/<[^>]+>/g, ' ').replace(/&amp;/g,'&').replace(/&nbsp;/g,' ').trim();
+
+          // Remove leading P (potwierdzona) if present
+          var workText = summaryText.replace(/^P\s*/i, '').trim();
+
+          // Parse persons: "10 os." or "6/8 os." (take max)
+          var personsMatch = workText.match(/^(\d+)(?:\s*\/\s*(\d+))?\s*os[oó]?b?\.?\s*/i);
+          var parsedPersons = 0;
+          if (personsMatch) {
+            var pn1 = parseInt(personsMatch[1]);
+            var pn2 = personsMatch[2] ? parseInt(personsMatch[2]) : 0;
+            parsedPersons = pn2 > pn1 ? pn2 : pn1;
+          }
+          var afterPersons = personsMatch ? workText.slice(personsMatch[0].length).trim() : workText;
+
+          // Extract organizer: first 2 words (first name + last name)
+          var words = afterPersons.split(/\s+/).filter(Boolean);
+          var nameWords = [];
+          for (var wi = 0; wi < words.length && wi < 2; wi++) {
+            // Stop if word is a phone number (9+ digits)
+            if (/^[0-9]{7,}$/.test(words[wi])) break;
+            nameWords.push(words[wi]);
+          }
+          var organizerName = nameWords.join(' ') || 'Import z GCal';
+          var afterName = words.slice(nameWords.length).join(' ').trim();
+
+          // Remove phone numbers: +48..., 00XX..., 9-digit numbers with spaces/dashes
+          function removePhones(str) {
+            return str
+              .replace(/[+]?[0-9]{2,3}[-\s]?[0-9]{3}[-\s]?[0-9]{3}[-\s]?[0-9]{3}/g, '')
+              .replace(/[+]?[0-9]{2,3}[-\s]?[0-9]{2,3}[-\s]?[0-9]{2,3}[-\s]?[0-9]{2,3}/g, '')
+              .replace(/(^|\s)[0-9]{7,}(\s|$)/g, ' ')
+              .replace(/\s{2,}/g, ' ')
+              .trim();
+          }
+          var noPhones = removePhones(afterName);
+          var cleanDesc = removePhones(fullDesc);
+
+          // Combine: notes from summary (after name, no phone) + full description
+          var combinedNotes = '';
+          if (noPhones) combinedNotes += noPhones;
+          if (cleanDesc && cleanDesc !== summaryText) {
+            if (combinedNotes) combinedNotes += '\n' + cleanDesc;
+            else combinedNotes = cleanDesc;
+          }
+          combinedNotes = combinedNotes.replace(/[\n]{3,}/g, '\n\n').trim();
+
+          // Detect extras
+          var searchText = (summaryText + ' ' + fullDesc).toLowerCase();
+          var detectedExtras = [];
+          var extrasMap = [
+            {keys:['catering open','grill open','open grill'], val:'Catering Open'},
+            {keys:['catering podstawowy','grill podstawowy','catering maly','catering mały'], val:'Catering Podstawowy'},
+            {keys:['grill sam','sam grill','samo grill','wynajem grilla','wynajem grill'], val:'Grill'},
+            {keys:['ognisko z kielbaskami','ognisko z kiełbaskami','ognisko kielbas'], val:'Ognisko z Kiełbaskami'},
+            {keys:['ognisko samo','samo ognisko','ognisko bez'], val:'Ognisko Samo'},
+            {keys:['gopro','go pro','kamerka'], val:'GoPro'},
+            {keys:['dyplom'], val:'Dyplomy'},
+            {keys:['puchar'], val:'Puchar'},
+            {keys:['quad'], val:'Quady'},
+            {keys:['strzelnic'], val:'Strzelnica'},
+            {keys:['fotograf','foto ','zdj'], val:'Fotograf'},
+          ];
+          extrasMap.forEach(function(ex) {
+            for (var ki = 0; ki < ex.keys.length; ki++) {
+              if (searchText.indexOf(ex.keys[ki]) !== -1) {
+                if (detectedExtras.indexOf(ex.val) === -1) detectedExtras.push(ex.val);
+                break;
+              }
+            }
+          });
+          if (detectedExtras.indexOf('Catering Open') !== -1) {
+            detectedExtras = detectedExtras.filter(function(x){ return x !== 'Grill'; });
+          }
+
+          // Deposit detection
+          var hasDeposit = /zadatek|zaliczka|zal\b|byl zal|byl zadatek|wplacono|wplata/i.test(searchText);
+
           await getDb().collection('schedule').add({
-            date: dateStr, startTime: startTime, endTime: endTime,
-            organizer: ev.summary || 'Import z GCal',
-            persons: 0, type: evType, extras: [], notes: desc,
-            deposit: false, gcalEventId: ev.id, gcalCalId: calId,
+            date: dateStr, startTime: startTime, endTime: '',
+            organizer: organizerName,
+            persons: parsedPersons, type: evType,
+            extras: detectedExtras,
+            notes: combinedNotes,
+            deposit: hasDeposit,
+            gcalEventId: ev.id, gcalCalId: calId,
             createdAt: firebase.firestore.FieldValue.serverTimestamp()
           });
           imported++;
@@ -1232,6 +1535,428 @@ async function syncFromGcal() {
   showToast('Zaimportowano ' + imported + ' wydarzeń z Google Calendar!');
   if (selDate) loadDayEvs(selDate);
   fetchMonthEvs(calY, calM, function(d){evCache=d;});
+}
+
+// ===== REGISTER FUNCTIONS AS WINDOW ALIASES =====
+// ===== CENNIK =====
+var cennikData = [
+  {order:0, cat:'Paintball Klasyczny 0.68 cal', color:'#c49a8a', note:'max. 150 graczy', items:[
+    {name:'Pakiet BASIC — 200 kul (~2-2,5h)', price:'90 zł/os'},
+    {name:'Pakiet SILT — 500 kul (~2,5-3h)', price:'130 zł/os'},
+    {name:'Pakiet MAXI — 1000 kul (~3,5-4,5h)', price:'180 zł/os'},
+    {name:'Dodatkowe 100 kulek', price:'15 zł'},
+  ]},
+  {order:1, cat:'Paintball Sportowy', color:'#c8f000', note:'od kwietnia 2026', items:[
+    {name:'Paintball Sportowy', price:'180 zł/os'},
+    {name:'Dodatkowe kulki 500 szt.', price:'50 zł'},
+  ]},
+  {order:2, cat:'Paintball EMEK 0.50 cal', color:'#6fcf97', note:'max. 90 graczy', items:[
+    {name:'Pakiet BASIC EMEK — 200 kul (~2-2,5h)', price:'90 zł/os'},
+    {name:'Pakiet EMEK — 500 kul (~2,5-3h)', price:'120 zł/os'},
+    {name:'Pakiet MAXI EMEK — 1000 kul (~3,5-4h)', price:'170 zł/os'},
+    {name:'Dodatkowe 100 kulek', price:'15 zł'},
+  ]},
+  {order:3, cat:'ASG', color:'#e07090', note:'max. 100 graczy', items:[
+    {name:'Pakiet BASIC — 500 kul (~2,5h)', price:'80 zł/os'},
+    {name:'Pakiet SILT — 1000 kul (~3,5h)', price:'110 zł/os'},
+  ]},
+  {order:4, cat:'GOTCHA', color:'#c47ee8', note:'max. 60 graczy, od 7 lat', items:[
+    {name:'Pakiet do 10 osób — 200 kul/os', price:'800 zł/grupa'},
+    {name:'Dodatkowa osoba', price:'70 zł'},
+    {name:'Dodatkowe 100 kulek', price:'15 zł'},
+  ]},
+  {order:5, cat:'Paintball Laserowy', color:'#f0b060', note:'max. 30 graczy', items:[
+    {name:'2 rozgrywki (2×20 min)', price:'60 zł/os'},
+    {name:'3 rozgrywki (3×20 min)', price:'80 zł/os'},
+    {name:'4 rozgrywki (4×20 min)', price:'90 zł/os'},
+    {name:'Każda kolejna rozgrywka 20 min', price:'15 zł/os'},
+  ]},
+  {order:6, cat:'Gel Blaster', color:'#f0d080', note:'max. 50 graczy, dla dzieci', items:[
+    {name:'Pakiet do 10 osób — 3 magazynki (~2400 kul/os)', price:'750 zł/grupa'},
+    {name:'Dodatkowa osoba', price:'70 zł'},
+    {name:'Dodatkowy hoper/magazynek (800 kul)', price:'15 zł'},
+  ]},
+  {order:7, cat:'Ognisko', color:'#ff8844', note:'', items:[
+    {name:'Ognisko z kiełbaskami (2 kiełbaski/os, sosy, pieczywo)', price:'20 zł/os'},
+    {name:'Samo ognisko (ławki, stoły, drewno ~2h, kijki)', price:'100 zł/grupa'},
+  ]},
+  {order:8, cat:'Grill', color:'#ff6633', note:'min. 10 osób', items:[
+    {name:'Pakiet Podstawowy (kiełbaska, kurczak/boczek, karkówka, napoje ~1l, pieczywo)', price:'50 zł/os'},
+    {name:'Pakiet OPEN (2-3 szt. każdego, napoje ~1,5l, surówki)', price:'70 zł/os'},
+    {name:'Wynajem samego grilla (brykiet/węgiel, ławki, stoły)', price:'100 zł/grupa'},
+  ]},
+  {order:9, cat:'Opcje dodatkowe', color:'#4dd0e1', note:'', items:[
+    {name:'Namiot ekspresowy 3×6m', price:'200 zł/szt'},
+    {name:'Nagłośnienie (kolumna BT/USB, 5h)', price:'250 zł'},
+    {name:'Oświetlenie LED z agregatem (5h)', price:'350 zł'},
+    {name:'Oświetlenie z pochodni i świeczek', price:'200 zł'},
+    {name:'Pozostanie po 22:00', price:'100 zł/h'},
+    {name:'Pakiet imprezowy (namiot, nagłośnienie, oświetlenie, agregat, teren do 24:00)', price:'1000 zł/grupa'},
+  ]},
+  {order:10, cat:'Atrakcje specjalne', color:'#a0a4e8', note:'', items:[
+    {name:'Quady — 1 quad (maks. 2 osoby)', price:'600 zł/h'},
+    {name:'Jazda samochodami terenowymi z instruktorem (4-6 os.)', price:'600 zł/h'},
+    {name:'Strzelnica z instruktorem (cały czas imprezy)', price:'700 zł'},
+    {name:'Kamerka GoPro', price:'50 zł/szt'},
+    {name:'Fotograf (200-300 zdjęć, lustrzanka NIKON)', price:'250 zł/impreza'},
+    {name:'Szkolenie Taktyczne GROM/OSŻW', price:'od 1000 zł/grupa'},
+  ]},
+];
+
+function loadCennik() {
+  var el = document.getElementById('cennik-content');
+  if (!el) return;
+  el.innerHTML = '<div class="empty">Ładowanie...</div>';
+  getDb().collection('cennik').orderBy('order').get()
+  .then(function(snap) {
+    if (!snap.empty) {
+      var cats = snap.docs.map(function(d){return Object.assign({id:d.id},d.data());});
+      window._currentCennikCats = cats;
+      renderCennik(cats);
+    } else {
+      // First time - save default data to Firestore so it gets IDs
+      var batch = getDb().batch();
+      cennikData.forEach(function(c) {
+        var ref = getDb().collection('cennik').doc();
+        batch.set(ref, c);
+      });
+      batch.commit().then(function() {
+        // Reload from Firestore now that it has IDs
+        return getDb().collection('cennik').orderBy('order').get();
+      }).then(function(snap2) {
+        var cats = snap2.docs.map(function(d){return Object.assign({id:d.id},d.data());});
+        window._currentCennikCats = cats;
+        renderCennik(cats);
+      });
+    }
+  })
+  .catch(function() { renderCennik(cennikData); });
+}
+
+function renderCennik(cats) {
+  var el = document.getElementById('cennik-content');
+  if (!el) return;
+  var html = '';
+
+  if (isAdmin) {
+    html += '<div style="background:#c8f00011;border:1px solid var(--accent);border-radius:12px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--accent)">';
+    html += '★ Admin: kliknij pozycję cennika aby ją edytować</div>';
+  }
+
+  cats.forEach(function(cat) {
+    var c = cat.color || '#c8f000';
+    html += '<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden;margin-bottom:14px">';
+    html += '<div style="background:' + c + '18;border-bottom:2px solid ' + c + ';padding:12px 16px;display:flex;align-items:center;justify-content:space-between">';
+    html += '<div style="font-weight:900;font-size:19px;text-transform:uppercase;color:' + c + ';letter-spacing:1px">' + cat.cat + '</div>';
+    if (cat.note) html += '<div style="font-size:12px;color:' + c + ';opacity:.7">' + cat.note + '</div>';
+    html += '</div>';
+    (cat.items || []).forEach(function(item, i) {
+      var bg = i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.03)';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:11px 16px;background:' + bg + ';border-bottom:1px solid rgba(255,255,255,0.05)">';
+      html += '<div style="font-size:14px;color:#e0e0e0;flex:1;padding-right:10px">' + item.name + '</div>';
+      html += '<div style="font-weight:700;font-size:17px;color:' + c + ';white-space:nowrap">' + item.price + '</div>';
+      html += '</div>';
+    });
+    if (isAdmin && cat.id) {
+      html += '<div style="padding:10px 16px;border-top:1px solid var(--border)">';
+      html += '<button class="edit-cennik-cat" data-id="' + cat.id + '" style="background:var(--accent3);color:#000;border:none;border-radius:6px;padding:6px 14px;font-weight:700;font-size:13px;cursor:pointer;margin-right:6px">✏️ Edytuj kategorię</button>';
+      html += '</div>';
+    } else if (isAdmin && !cat.id) {
+      html += '<div style="padding:10px 16px;border-top:1px solid var(--border);font-size:12px;color:var(--muted)">Odśwież stronę aby edytować</div>';
+    }
+    html += '</div>';
+  });
+
+  if (isAdmin) {
+    html += '<button onclick="addCennikCat()" style="display:block;width:100%;padding:13px;border-radius:14px;border:2px dashed var(--accent);background:transparent;color:var(--accent);font-weight:700;font-size:15px;cursor:pointer;letter-spacing:1px;text-transform:uppercase">+ Dodaj kategorię</button>';
+  }
+  el.innerHTML = html;
+  el.addEventListener('click', function(e) {
+    var btn = e.target.closest('.edit-cennik-cat');
+    if (btn) editCennikCat(btn.getAttribute('data-id'));
+  });
+}
+
+function editCennikCat(id) {
+  if (!id || id === '') {
+    showCennikModal(null, null);
+    return;
+  }
+  // Fetch fresh data from Firestore
+  getDb().collection('cennik').doc(id).get().then(function(snap) {
+    if (snap.exists) {
+      showCennikModal(Object.assign({id: snap.id}, snap.data()), id);
+    } else {
+      showToast('Nie znaleziono kategorii', true);
+    }
+  }).catch(function() {
+    showToast('Błąd ładowania kategorii', true);
+  });
+}
+
+function addCennikCat() {
+  showCennikModal(null, null);
+}
+
+function showCennikModal(cat, id) {
+  var existing = document.getElementById('cennik-modal');
+  if (existing) existing.remove();
+
+  var items = cat ? (cat.items || []) : [];
+  var itemsHtml = '';
+  items.forEach(function(item, i) {
+    itemsHtml +=
+      '<div style="display:flex;gap:8px;margin-bottom:6px" id="ci-' + i + '">' +
+      '<input style="flex:2;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px" value="' + (item.name||'').replace(/"/g,'&quot;') + '" placeholder="Nazwa pakietu" id="cin-' + i + '">' +
+      '<input style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px" value="' + (item.price||'').replace(/"/g,'&quot;') + '" placeholder="Cena" id="cip-' + i + '">' +
+      '<button class="rm-item" data-i="' + i + '" style="background:var(--accent2);color:#fff;border:none;border-radius:6px;padding:8px 10px;cursor:pointer">✕</button>' +
+      '</div>';
+  });
+
+  var modal = document.createElement('div');
+  modal.id = 'cennik-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:#000d;z-index:600;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML =
+    '<div style="background:var(--surface);border-radius:14px;width:100%;max-width:500px;max-height:90vh;overflow-y:auto">' +
+    '<div style="padding:16px 20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface)">' +
+    '<div style="font-weight:900;font-size:18px;text-transform:uppercase;color:var(--accent)">' + (cat ? 'Edytuj kategorię' : 'Nowa kategoria') + '</div>' +
+    '<button id="cm-close" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer">✕</button>' +
+    '</div>' +
+    '<div style="padding:18px">' +
+    '<label style="font-size:11px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:6px">Nazwa kategorii</label>' +
+    '<input id="cm-cat" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:10px;font-size:14px;margin-bottom:12px" value="' + (cat ? (cat.cat||'').replace(/"/g,'&quot;') : '') + '" placeholder="np. Paintball Klasyczny">' +
+    '<label style="font-size:11px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:6px">Notatka</label>' +
+    '<input id="cm-note" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:10px;font-size:14px;margin-bottom:12px" value="' + (cat ? (cat.note||'') : '') + '" placeholder="np. max. 150 graczy">' +
+    '<label style="font-size:11px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:6px">Kolor</label>' +
+    '<input id="cm-color" type="color" style="width:60px;height:36px;border:none;background:none;cursor:pointer;margin-bottom:14px" value="' + (cat ? cat.color : '#c8f000') + '">' +
+    '<label style="font-size:11px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:8px">Pozycje cennika</label>' +
+    '<div id="cm-items">' + itemsHtml + '</div>' +
+    '<button id="cm-add-item" style="background:var(--surface2);border:1px dashed var(--border);color:var(--muted);border-radius:8px;padding:8px;width:100%;cursor:pointer;font-size:13px;margin-bottom:14px">+ Dodaj pozycję</button>' +
+    '<button id="cm-save" style="display:block;width:100%;padding:13px;border-radius:14px;border:none;background:var(--accent);color:#000;font-weight:700;font-size:16px;cursor:pointer;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">💾 Zapisz</button>' +
+    (id ? '<button id="cm-del" style="display:block;width:100%;padding:10px;border-radius:14px;border:none;background:var(--accent2);color:#fff;font-weight:700;font-size:14px;cursor:pointer">🗑️ Usuń kategorię</button>' : '') +
+    '</div></div>';
+
+  document.body.appendChild(modal);
+
+  // Attach events safely (no inline onclick with params)
+  document.getElementById('cm-close').onclick = function() { modal.remove(); };
+  document.getElementById('cm-add-item').onclick = function() { addCennikItem(); };
+  document.getElementById('cm-save').onclick = function() { saveCennikCat(id || ''); };
+  if (id) {
+    document.getElementById('cm-del').onclick = function() { deleteCennikCat(id); };
+  }
+  modal.addEventListener('click', function(e) {
+    if (e.target.classList.contains('rm-item')) {
+      var idx = e.target.getAttribute('data-i');
+      var el = document.getElementById('ci-' + idx);
+      if (el) el.remove();
+    }
+  });
+}
+
+function addCennikItem() {
+  var cont = document.getElementById('cm-items');
+  var i = cont.children.length;
+  var div = document.createElement('div');
+  div.style.cssText = 'display:flex;gap:8px;margin-bottom:6px';
+  div.id = 'ci-' + i;
+  div.innerHTML =
+    '<input style="flex:2;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px" placeholder="Nazwa pakietu" id="cin-' + i + '">' +
+    '<input style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px" placeholder="Cena" id="cip-' + i + '">' +
+    '<button onclick="removeCennikItem(' + i + ')" style="background:var(--accent2);color:#fff;border:none;border-radius:6px;padding:8px 10px;cursor:pointer">✕</button>';
+  cont.appendChild(div);
+}
+
+function removeCennikItem(i) {
+  var el = document.getElementById('ci-' + i);
+  if (el) el.remove();
+}
+
+async function saveCennikCat(id) {
+  var cat = document.getElementById('cm-cat').value.trim();
+  var note = document.getElementById('cm-note').value.trim();
+  var color = document.getElementById('cm-color').value;
+  if (!cat) { showToast('Wpisz nazwę kategorii', true); return; }
+  var items = [];
+  var cont = document.getElementById('cm-items');
+  Array.from(cont.children).forEach(function(row) {
+    var nameEl = row.querySelector('[id^="cin-"]');
+    var priceEl = row.querySelector('[id^="cip-"]');
+    if (nameEl && priceEl && nameEl.value.trim()) {
+      items.push({name: nameEl.value.trim(), price: priceEl.value.trim()});
+    }
+  });
+  var snap = await getDb().collection('cennik').get();
+  var data = {cat: cat, note: note, color: color, items: items, order: snap.size};
+  try {
+    if (id) {
+      await getDb().collection('cennik').doc(id).update(data);
+    } else {
+      // First time - save all default data if empty
+      if (snap.empty) {
+        var batch = getDb().batch();
+        cennikData.forEach(function(c) {
+          batch.set(getDb().collection('cennik').doc(), c);
+        });
+        await batch.commit();
+        // Now add the new one
+        await getDb().collection('cennik').add(data);
+      } else {
+        await getDb().collection('cennik').add(data);
+      }
+    }
+    document.getElementById('cennik-modal').remove();
+    showToast('Cennik zapisany!');
+    loadCennik();
+  } catch(e) { showToast('Błąd: ' + e.message, true); }
+}
+
+async function deleteCennikCat(id) {
+  if (!confirm('Usunąć kategorię?')) return;
+  await getDb().collection('cennik').doc(id).delete();
+  document.getElementById('cennik-modal').remove();
+  showToast('Usunięto');
+  loadCennik();
+}
+
+
+// ===== PUSH NOTIFICATIONS =====
+var VAPID_KEY = 'BG9N9V8yhj4v13XY4RKqW6uCaAwOFWG3EcIBO9qIRNwBOTkNaS2yi5jMc9l9_p1XyrYYRKsXI-4fbiIY8do4560';
+var messaging = null;
+
+function initMessaging() {
+  try {
+    messaging = firebase.messaging();
+  } catch(e) {
+    console.warn('Messaging not supported:', e);
+    return;
+  }
+}
+
+async function requestNotificationPermission() {
+  if (!messaging) return;
+  try {
+    var permission = await Notification.requestPermission();
+    if (permission === 'granted') {
+      var token = await messaging.getToken({ vapidKey: VAPID_KEY });
+      if (token) {
+        // Save token to user's Firestore doc
+        await getDb().collection('users').doc(cu.uid).update({ fcmToken: token });
+        console.log('FCM token saved');
+      }
+    }
+  } catch(e) {
+    console.warn('Notification permission error:', e);
+  }
+}
+
+async function sendPushToAdmin(title, body) {
+  // Save notification to Firestore - admin will receive it via FCM
+  try {
+    await getDb().collection('notifications').add({
+      title: title,
+      body: body,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      read: false,
+      fromUser: cud ? cud.firstName + ' ' + cud.lastName : 'Instruktor'
+    });
+  } catch(e) {
+    console.warn('Notification error:', e);
+  }
+}
+
+function listenForNotifications() {
+  if (!isAdmin) return;
+  // Listen for new notifications in Firestore
+  getDb().collection('notifications')
+    .where('read', '==', false)
+    .onSnapshot(function(snap) {
+      snap.docChanges().forEach(function(change) {
+        if (change.type === 'added') {
+          var data = change.doc.data();
+          // Don't show on first load (only new ones)
+          if (data.createdAt) {
+            var ts = data.createdAt.toDate ? data.createdAt.toDate() : new Date();
+            var age = (Date.now() - ts.getTime()) / 1000;
+            if (age < 10) {
+              // Show browser notification
+              if (Notification.permission === 'granted') {
+                new Notification(data.title, {
+                  body: data.body,
+                  icon: '/favicon.ico',
+                  badge: '/favicon.ico'
+                });
+              }
+              // Also show in-app toast
+              showToast('🔔 ' + data.title + ': ' + data.body);
+              // Mark as read
+              change.doc.ref.update({ read: true });
+            }
+          }
+        }
+      });
+    });
+}
+
+var SEED_VIDEOS = [
+  {order:0, title:'Paintball — Zasady Bezpieczeństwa', description:'Obowiązkowe przed pierwszą zmianą. Zasady bezpieczeństwa na polu gry.', url:'https://youtu.be/J7FjG08PaUM?si=TW8DoA0SsuoGBVmG', duration:''},
+  {order:1, title:'ASG — Zasady Bezpieczeństwa', description:'Zasady bezpieczeństwa dla rozgrywek ASG.', url:'https://youtu.be/hPhUv_fAy4Y?si=k2bkAguStoHWUq23', duration:''},
+  {order:2, title:'Scenariusze — Pole Leśne (Las)', description:'Podstawowe scenariusze gry na polu leśnym.', url:'https://youtu.be/wiM15eUFSwA?si=_4ZhYZChb981nElF', duration:''},
+  {order:3, title:'Scenariusze — Pole z Oponami', description:'Podstawowe scenariusze gry na polu z oponami.', url:'https://youtu.be/38PwbktD4pU?si=MzbWLCM_WKBKCY4m', duration:''},
+  {order:4, title:'Scenariusze — Pole Budynek Duży', description:'Podstawowe scenariusze gry w dużym budynku.', url:'https://youtu.be/ngYupVn2T-A?si=YZosKQKVmisfJCbN', duration:''},
+  {order:5, title:'Scenariusze — Pole Villa (Mały Budynek)', description:'Podstawowe scenariusze gry w małym budynku (Villa).', url:'https://youtu.be/SbeNNABp9V8?si=hCuSJxLPwoWjFjFK', duration:''},
+];
+
+async function seedVideos() {
+  try {
+    var snap = await getDb().collection('videos').get();
+    if (snap.empty) {
+      var batch = getDb().batch();
+      SEED_VIDEOS.forEach(function(v) {
+        var ref = getDb().collection('videos').doc();
+        batch.set(ref, Object.assign(v, {createdAt: firebase.firestore.FieldValue.serverTimestamp()}));
+      });
+      await batch.commit();
+      showToast('Filmy szkoleniowe dodane!');
+    }
+  } catch(e) { console.warn('seedVideos error:', e); }
+}
+
+function _registerFunctions(){
+  window.swPay2=swPayMain;
+  window.sendInvoice2=sendInvoice3;
+  window.addOrder2=addOrder3;
+  window.addNote2=addNote3;
+  window.startWork2=startWork;
+  window.endWork2=endWork;
+  window.connectGcal2=connectGcal;
+  window.openAddEv2=openAddEv;
+  window.submitEvent2=submitEvent3;
+  window.goHome2=goHome;
+  window.showPage2=showPage3;
+  window.swAdm2=swAdm;
+  window.addVideo2=addVideo3;
+  window.calPrev2=calPrev;
+  window.calNext2=calNext;
+  window.selDay2=selDay;
+  window.backToCal2=backToCal;
+  window.editEv2=editEv;
+  window.delEv2=delEv;
+  window.updOrd2=updOrd;
+  window.delOrd2=delOrd;
+  window.delNote2=delNote;
+  window.togRole2=togRole;
+  window.approveUser2=approveUser;
+  window.delUD2=delUD;
+  window.loadCennik2=loadCennik;
+  window.editCennikCat2=editCennikCat;
+  window.addCennikCat2=addCennikCat;
+  window.addCennikItem2=addCennikItem;
+  window.removeCennikItem2=removeCennikItem;
+  window.saveCennikCat2=saveCennikCat;
+  window.deleteCennikCat2=deleteCennikCat;
+  window.markInv2=markInv;
+  window.delVid2=delVid;
 }
 
 function showToast(msg,err){var o=document.querySelector('.toast');if(o)o.remove();var t=document.createElement('div');t.className='toast'+(err?' toast-err':'');t.textContent=msg;document.body.appendChild(t);setTimeout(function(){t.style.opacity='0';setTimeout(function(){if(t.parentNode)t.remove();},300);},2800);}
