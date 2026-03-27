@@ -487,6 +487,25 @@ function openEvDetail(id){if(window.openEvDetail2)window.openEvDetail2(id);}
           <div class="fgrp"><label class="fl2">Kwota brutto (zł)</label><input class="fi2" id="inv_amount" placeholder="500" inputmode="decimal"></div>
           <div class="fgrp"><label class="fl2">Opis usługi</label><input class="fi2" id="inv_desc" placeholder="Paintball dla grupy 10 osób"></div>
           <div class="fgrp"><label class="fl2">E-mail klienta</label><input class="fi2" id="inv_email" placeholder="klient@firma.pl" inputmode="email"></div>
+          <div class="fgrp"><label class="fl2">Telefon klienta</label><input class="fi2" id="inv_phone" placeholder="123 456 789" inputmode="tel"></div>
+          <div class="fgrp">
+            <label class="fl2">Forma płatności</label>
+            <div style="display:flex;gap:8px;margin-top:4px">
+              <label style="flex:1;display:flex;align-items:center;gap:8px;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;cursor:pointer">
+                <input type="radio" name="inv_payment" id="inv_pay_cash" value="Gotówka" checked style="accent-color:var(--accent)">
+                <span style="font-size:13px">💵 Gotówka</span>
+              </label>
+              <label style="flex:1;display:flex;align-items:center;gap:8px;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;cursor:pointer">
+                <input type="radio" name="inv_payment" id="inv_pay_transfer" value="Przelew" style="accent-color:var(--accent)">
+                <span style="font-size:13px">🏦 Przelew</span>
+              </label>
+              <label style="flex:1;display:flex;align-items:center;gap:8px;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;cursor:pointer">
+                <input type="radio" name="inv_payment" id="inv_pay_card" value="Karta" style="accent-color:var(--accent)">
+                <span style="font-size:13px">💳 Karta</span>
+              </label>
+            </div>
+          </div>
+          <div class="fgrp mb12"><label class="fl2">Uwagi</label><textarea class="fi2" id="inv_notes" placeholder="Dodatkowe informacje..." style="min-height:70px;resize:none"></textarea></div>
           <button class="btn-full" onclick="sendInvoice()">📤 Wyślij do administratora</button>
         </div>
       </div>
