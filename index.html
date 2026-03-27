@@ -366,6 +366,7 @@ function addCennikItem(){if(window.addCennikItem2)window.addCennikItem2();}
 function removeCennikItem(i){if(window.removeCennikItem2)window.removeCennikItem2(i);}
 function saveCennikCat(id){if(window.saveCennikCat2)window.saveCennikCat2(id);}
 function deleteCennikCat(id){if(window.deleteCennikCat2)window.deleteCennikCat2(id);}
+function openEvDetail(id){if(window.openEvDetail2)window.openEvDetail2(id);}
 </script>
 
 <!-- AUTH -->
@@ -612,12 +613,23 @@ function deleteCennikCat(id){if(window.deleteCennikCat2)window.deleteCennikCat2(
   </div>
 </div>
 
+<!-- EVENT DETAIL MODAL -->
+<div class="modal" id="ev-detail-modal">
+  <div class="mbox" style="max-width:560px">
+    <div class="mhdr">
+      <div class="mtitle" id="ev-detail-title">Szczegóły rezerwacji</div>
+      <button class="mclose" id="ev-detail-close">✕</button>
+    </div>
+    <div class="mbody" id="ev-detail-body"></div>
+  </div>
+</div>
+
 <!-- VIDEO MODAL -->
 <div class="modal" id="vid-modal">
   <div class="mbox">
     <div class="mhdr">
       <div class="mtitle" id="vid-modal-title"></div>
-      <button class="mclose" onclick="document.getElementById('vid-modal').classList.remove('open')">✕</button>
+      <button class="mclose" id="vid-modal-close">✕</button>
     </div>
     <div class="mbody">
       <p style="font-size:14px;color:var(--muted);line-height:1.6" id="vid-modal-desc"></p>
@@ -918,11 +930,15 @@ function loadDayEvs(ds){
   getDb().collection('schedule').where('date','==',ds).get()
   .then(function(snap){
     var evs=snap.docs.map(function(doc){return Object.assign({id:doc.id},doc.data());});
-    // sort client-side by startTime string (HH:MM format sorts lexicographically)
     evs.sort(function(a,b){return (a.startTime||'').localeCompare(b.startTime||'');});
     var list=document.getElementById('day-list');if(!list)return;
     if(!evs.length){list.innerHTML='<div class="empty">Brak rezerwacji w tym dniu</div>';return;}
     list.innerHTML=evs.map(renderEvCard).join('');
+    // Event delegation for card clicks
+    list.onclick=function(e){
+      var card=e.target.closest('[data-evid]');
+      if(card && !e.target.closest('button')) openEvDetail2(card.getAttribute('data-evid'));
+    };
   })
   .catch(function(e){
     var list=document.getElementById('day-list');
@@ -932,10 +948,81 @@ function loadDayEvs(ds){
 
 var TCLS={'PB Klasyk':'t-pbk','PB EMEK 0.68 CAL':'t-pbe','EMEK':'t-emek','ASG':'t-asg','GOTCHA':'t-got','GELBASTER':'t-gel','LASER':'t-las','Inne':'t-inne'};
 
+function openEvDetail(id) {
+  getDb().collection('schedule').doc(id).get().then(function(snap) {
+    if (!snap.exists) return;
+    var e = Object.assign({id: snap.id}, snap.data());
+    var tc = TCLS[e.type] || '';
+    var extras = (e.extras || []).map(function(x) {
+      return '<span style="font-size:14px;font-weight:600;padding:6px 14px;border-radius:10px;background:var(--surface2);border:1px solid #444;color:#fff;display:inline-block;margin:3px">' + x + '</span>';
+    }).join('');
+    var depBadge = e.deposit
+      ? '<span style="background:#c8f00022;color:var(--accent);border:1px solid var(--accent);font-size:13px;font-weight:700;padding:5px 14px;border-radius:20px">✅ Zadatek wpłacony</span>'
+      : '<span style="background:#ff444411;color:var(--accent2);border:1px solid var(--accent2);font-size:13px;font-weight:700;padding:5px 14px;border-radius:20px">❌ Brak zadatku</span>';
+
+    var html = '';
+    // Time + deposit
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--border)">';
+    html += '<div style="font-size:26px;font-weight:900;color:var(--accent)">⏰ ' + e.startTime + (e.endTime ? ' — ' + e.endTime : '') + '</div>';
+    html += depBadge;
+    html += '</div>';
+    // Persons + organizer
+    html += '<div style="margin-bottom:16px">';
+    html += '<div style="font-size:12px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;margin-bottom:6px">Organizator</div>';
+    html += '<div style="font-size:28px;font-weight:900;text-transform:uppercase;letter-spacing:1px">' + (e.organizer || '—') + '</div>';
+    html += '<div style="font-size:18px;font-weight:700;color:var(--muted);margin-top:4px">👥 ' + (e.persons || '?') + ' osób</div>';
+    html += '</div>';
+    // Attraction
+    if (e.type) {
+      html += '<div style="margin-bottom:16px">';
+      html += '<div style="font-size:12px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;margin-bottom:6px">Atrakcja</div>';
+      html += '<span class="ev-type-badge-big ' + tc + '" style="font-size:18px;padding:8px 20px">🎯 ' + e.type + '</span>';
+      html += '</div>';
+    }
+    // Extras
+    if (e.extras && e.extras.length) {
+      html += '<div style="margin-bottom:16px">';
+      html += '<div style="font-size:12px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;margin-bottom:8px">Opcje dodatkowe</div>';
+      html += '<div style="display:flex;flex-wrap:wrap;gap:6px">' + extras + '</div>';
+      html += '</div>';
+    }
+    // Notes
+    if (e.notes) {
+      html += '<div style="margin-bottom:16px">';
+      html += '<div style="font-size:12px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;margin-bottom:6px">Uwagi</div>';
+      html += '<div style="font-size:15px;color:#fff;padding:12px 14px;background:#1a1a1a;border-left:3px solid var(--accent);border-radius:8px;line-height:1.6;white-space:pre-wrap">' + e.notes + '</div>';
+      html += '</div>';
+    }
+    // Admin actions
+    if (isAdmin) {
+      html += '<div style="display:flex;gap:8px;margin-top:8px;padding-top:14px;border-top:1px solid var(--border)">';
+      html += '<button class="btn-sm bsw" id="ev-detail-edit">✏️ Edytuj</button>';
+      html += '<button class="btn-sm bsd" id="ev-detail-del">🗑️ Usuń</button>';
+      html += '</div>';
+    }
+
+    document.getElementById('ev-detail-title').textContent = e.organizer || 'Rezerwacja';
+    document.getElementById('ev-detail-body').innerHTML = html;
+    document.getElementById('ev-detail-modal').classList.add('open');
+    var closeBtn = document.getElementById('ev-detail-close');
+    if (closeBtn) closeBtn.onclick = function() { document.getElementById('ev-detail-modal').classList.remove('open'); };
+    var editBtn = document.getElementById('ev-detail-edit');
+    var delBtn = document.getElementById('ev-detail-del');
+    if (editBtn) editBtn.onclick = function() {
+      document.getElementById('ev-detail-modal').classList.remove('open');
+      editEv(e.id);
+    };
+    if (delBtn) delBtn.onclick = function() {
+      document.getElementById('ev-detail-modal').classList.remove('open');
+      delEv(e.id, e.date);
+    };
+  });
+}
+
 function renderEvCard(e){
   var tc=TCLS[e.type]||'';
   var extras=(e.extras||[]).map(function(x){return '<span class="ev-extra">'+x+'</span>';}).join('');
-  var h='<div class="ev-card">';
+  var h='<div class="ev-card" onclick="openEvDetail(\''+e.id+'\')" style="cursor:pointer">';
   h+='<div class="ev-top">';
   h+='<div class="ev-time">'+e.startTime+(e.endTime?' – '+e.endTime:'')+'</div>';
   h+='<div class="ev-org">'+(e.organizer||'—')+'</div>';
@@ -1118,6 +1205,8 @@ function openVid(t,d,u){
   document.getElementById('vid-modal-desc').textContent=d;
   var l=document.getElementById('vid-modal-link');l.href=u||'#';l.style.display=u?'inline-block':'none';
   document.getElementById('vid-modal').classList.add('open');
+  var vc = document.getElementById('vid-modal-close');
+  if(vc) vc.onclick = function(){ document.getElementById('vid-modal').classList.remove('open'); };
 }
 
 // ===== PAYMENTS =====
@@ -1965,6 +2054,7 @@ function _registerFunctions(){
   window.removeCennikItem2=removeCennikItem;
   window.saveCennikCat2=saveCennikCat;
   window.deleteCennikCat2=deleteCennikCat;
+  window.openEvDetail2=openEvDetail;
   window.markInv2=markInv;
   window.delVid2=delVid;
 }
