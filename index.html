@@ -1215,7 +1215,8 @@ function swPayMain(tab){
   document.querySelectorAll('.ptab').forEach(function(el,i){el.classList.toggle('active',['card','cash','invoice'][i]===tab);});
 }
 async function sendInvoice3(){
-  var data={name:gi('inv_name'),nip:gi('inv_nip'),addr:gi('inv_addr'),zip:gi('inv_zip'),city:gi('inv_city'),amount:gi('inv_amount'),desc:gi('inv_desc'),email:gi('inv_email')};
+  var paymentEl = document.querySelector('input[name="inv_payment"]:checked');
+  var data={name:gi('inv_name'),nip:gi('inv_nip'),addr:gi('inv_addr'),zip:gi('inv_zip'),city:gi('inv_city'),amount:gi('inv_amount'),desc:gi('inv_desc'),email:gi('inv_email'),phone:gi('inv_phone'),payment:paymentEl?paymentEl.value:'Gotówka',notes:gi('inv_notes')};
   if(!data.name||!data.nip||!data.amount)return showToast('Wypełnij nazwę, NIP i kwotę!',true);
   try{await getDb().collection('invoiceRequests').add(Object.assign(data,{submittedBy:cud.firstName+' '+cud.lastName,userId:cu.uid,status:'pending',createdAt:firebase.firestore.FieldValue.serverTimestamp()}));showToast('Wysłano!');['inv_name','inv_nip','inv_addr','inv_zip','inv_city','inv_amount','inv_desc','inv_email'].forEach(function(id){document.getElementById(id).value='';});}
   catch(e){showToast('Błąd: '+e.message,true);}
