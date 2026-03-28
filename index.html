@@ -1984,8 +1984,8 @@ async function loadProfile() {
   var udata = usnap.data() || {};
   var avatar = udata.avatar || '🎯';
   var phone = udata.phone || '';
-  var shiftSnap = await getDb().collection('shifts').where('userId','==',uid).get();
-  var shifts = shiftSnap.docs.map(function(d){return Object.assign({id:d.id},d.data());});
+  var shiftSnap = await getDb().collection('shifts').get(); // filter client-side to avoid index requirement
+  var shifts = shiftSnap.docs.map(function(d){return Object.assign({id:d.id},d.data());}).filter(function(s){return s.userId===uid;});
   shifts.sort(function(a,b){
     var ta = a.startTime ? (a.startTime.toDate ? a.startTime.toDate().getTime() : new Date(a.startTime).getTime()) : 0;
     var tb = b.startTime ? (b.startTime.toDate ? b.startTime.toDate().getTime() : new Date(b.startTime).getTime()) : 0;
@@ -2001,11 +2001,11 @@ async function loadProfile() {
   var mH = Math.floor(totalMinMonth/60), mM = totalMinMonth%60;
   var totalMin = shifts.reduce(function(acc,s){return acc+(s.duration||0);},0);
   var tH = Math.floor(totalMin/60), tM = totalMin%60;
-  var ratingSnap = await getDb().collection('ratings').where('userId','==',uid).get();
-  var ratings = ratingSnap.docs.map(function(d){return d.data().stars||0;});
+  var ratingSnap = await getDb().collection('ratings').get(); // filter client-side
+  var ratings = ratingSnap.docs.filter(function(d){return d.data().userId===uid;}).map(function(d){return d.data().stars||0;});
   var avgRating = ratings.length ? (ratings.reduce(function(a,b){return a+b;},0)/ratings.length).toFixed(1) : null;
-  var taskSnap = await getDb().collection('tasks').where('userId','==',uid).get();
-  var tasks = taskSnap.docs.map(function(d){return Object.assign({id:d.id},d.data());});
+  var taskSnap = await getDb().collection('tasks').get(); // filter client-side
+  var tasks = taskSnap.docs.map(function(d){return Object.assign({id:d.id},d.data());}).filter(function(t){return t.userId===uid;});
   tasks.sort(function(a,b){
     var ta = a.createdAt ? (a.createdAt.toDate ? a.createdAt.toDate().getTime() : 0) : 0;
     var tb = b.createdAt ? (b.createdAt.toDate ? b.createdAt.toDate().getTime() : 0) : 0;
