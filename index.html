@@ -377,6 +377,7 @@ function openAddTask(){if(window.openAddTask2)window.openAddTask2();}
 function cycleTaskStatus(tid){if(window.cycleTaskStatus2)window.cycleTaskStatus2(tid);}
 function deleteTask(tid){if(window.deleteTask2)window.deleteTask2(tid);}
 function openAvatarPicker(uid,av){if(window.openAvatarPicker2)window.openAvatarPicker2(uid,av);}
+function openUserProfile(uid){if(window.openUserProfile2)window.openUserProfile2(uid);}
 </script>
 
 <!-- AUTH -->
@@ -883,6 +884,7 @@ function buildNav(activePage){
 }
 
 function showPage3(name){
+  var pb=document.getElementById('profile-btn-bar');if(pb)pb.style.display='block';
   document.getElementById('home-screen').classList.remove('active');
   document.querySelectorAll('.page').forEach(function(p){p.classList.remove('active');});
   var pg=document.getElementById('page-'+name);if(pg)pg.classList.add('active');
@@ -1364,10 +1366,11 @@ async function loadAdmUsers(){
       html+='</div>';
     } else {
       html+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
+      html+='<button class="btn-sm" style="background:var(--accent);color:#000;border:none" data-uid="'+u.id+'" data-action="open-profile">👤 Profil</button>';
       if(role==='instructor'){
-        html+='<button class="btn-sm bsw" data-uid="'+u.id+'" data-action="make-admin">→ Zmień na Admin</button>';
+        html+='<button class="btn-sm bsw" data-uid="'+u.id+'" data-action="make-admin">→ Admin</button>';
       } else {
-        html+='<button class="btn-sm bsg" data-uid="'+u.id+'" data-action="make-instructor">→ Zmień na Instruktor</button>';
+        html+='<button class="btn-sm bsg" data-uid="'+u.id+'" data-action="make-instructor">→ Instruktor</button>';
       }
       html+='<button class="btn-sm bsd" data-uid="'+u.id+'" data-action="del">Usuń</button>';
       html+='</div>';
@@ -1387,6 +1390,7 @@ async function loadAdmUsers(){
     else if(action==='make-admin') togRole(uid,'instructor');
     else if(action==='make-instructor') togRole(uid,'admin');
     else if(action==='del') delUD(uid);
+    else if(action==='open-profile') openUserProfile(uid);
   };
 }
 async function approveUser(uid,role){
@@ -1671,7 +1675,14 @@ async function syncFromGcal() {
         if (detectedExtras.indexOf('Catering Open') !== -1) {
           detectedExtras = detectedExtras.filter(function(x){ return x !== 'Grill'; });
         }
-        var hasDeposit = /zadatek|zaliczka|zal\b|byl zal|wplacono/i.test(searchText);
+        // Check for deposit - but NOT if preceded by "bez"
+var hasDeposit = (
+  /zadatek/.test(searchText) ||
+  /zaliczka/.test(searchText) ||
+  /wplacono/.test(searchText) ||
+  /byl zal[^i]/.test(searchText) ||
+  /wplacil/.test(searchText)
+) && !/bez zal/.test(searchText) && !/nie ma zal/.test(searchText) && !/brak zal/.test(searchText);
 
         var evType = type;
         // Determine which type based on calId
@@ -1963,6 +1974,8 @@ async function loadProfile() {
   var el = document.getElementById('profile-content');
   if (!el) return;
   el.innerHTML = '<div class="empty">Ładowanie...</div>';
+  var qbtn = document.getElementById('profile-quick-btn');
+  if(qbtn && udata) qbtn.innerHTML = (udata.avatar||'🎯') + ' ' + (udata.firstName||'Mój profil');
   var uid = cu.uid;
   var usnap = await getDb().collection('users').doc(uid).get();
   var udata = usnap.data() || {};
@@ -1987,6 +2000,9 @@ async function loadProfile() {
   var tasks = taskSnap.docs.map(function(d){return Object.assign({id:d.id},d.data());});
   var html = '';
   html += '<div class="profile-header">';
+  if(viewingOther) {
+    html += '<div style="margin-bottom:8px"><button id="back-to-admin" style="background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer">← Wróć do listy użytkowników</button></div>';
+  }
   html += '<div class="profile-avatar" id="avatar-btn">'+avatar+'</div>';
   html += '<div style="flex:1"><div style="font-weight:900;font-size:22px">'+udata.firstName+' '+udata.lastName+'</div>';
   html += '<div style="font-size:13px;color:var(--muted)">'+udata.email+'</div>';
@@ -2034,6 +2050,8 @@ async function loadProfile() {
   }
   el.innerHTML = html;
   document.getElementById('avatar-btn').onclick = function(){ openAvatarPicker(uid, avatar); };
+  var backBtn = document.getElementById('back-to-admin');
+  if(backBtn) backBtn.onclick = function(){ window._profileUid=null; swAdm2('adm-users'); };
   document.getElementById('add-task-btn').onclick = function(){ openAddTask(); };
   el.addEventListener('click', function(e) {
     var btn = e.target.closest('[data-action]');
@@ -2136,6 +2154,12 @@ async function seedVideos() {
 }
 
 // ===== REGISTER FUNCTIONS =====
+function openUserProfile(uid) {
+  // Open profile page for specific user (admin view)
+  window._profileUid = uid;
+  showPage2('profile');
+}
+
 function _registerFunctions(){
   window.swPay2=swPayMain;
   window.sendInvoice2=sendInvoice3;
@@ -2177,6 +2201,7 @@ function _registerFunctions(){
   window.deleteTask2=deleteTask;
   window.openAvatarPicker2=openAvatarPicker;
   window.loadProfile2=loadProfile;
+  window.openUserProfile2=openUserProfile;
 }
 
 function showToast(msg,err){var o=document.querySelector('.toast');if(o)o.remove();var t=document.createElement('div');t.className='toast'+(err?' toast-err':'');t.textContent=msg;document.body.appendChild(t);setTimeout(function(){t.style.opacity='0';setTimeout(function(){if(t.parentNode)t.remove();},300);},3000);}
