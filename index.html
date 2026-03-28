@@ -814,6 +814,7 @@ var HOME_TILES=[
   {id:'orders',name:'Zamówienia',desc:'Zgłoś braki sprzętu',icon:'📦',color:'#00ccaa'},
   {id:'notes',name:'Uwagi',desc:'Wiadomości dla zespołu',icon:'💬',color:'#ff8844'},
   {id:'cennik',name:'Cennik',desc:'Ceny usług i pakietów',icon:'💰',color:'#22c55e'},
+  {id:'profile',name:'Mój Profil',desc:'Twoje statystyki i zadania',icon:'👤',color:'#4488ff'},
 ];
 
 function goHome(){
@@ -857,17 +858,18 @@ var NAV_ICONS={
   orders:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>',
   notes:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
   cennik:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>',
+  profile:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
   admin:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>'
 };
 
 function buildNav(activePage){
-  var pages=['schedule','worktime','videos','payments','orders','notes','cennik'];
+  var pages=['schedule','worktime','videos','payments','orders','notes','cennik','profile'];
   if(isAdmin)pages.push('admin');
   var nav=document.getElementById('nav');
   var homeIcon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>';
   var html='<button class="nav-btn nav-btn-home'+(activePage==='home'?' active':'')+'" onclick="goHome()">'+homeIcon+'<span>Menu</span></button>';
   html+=pages.map(function(p){
-    var label=p==='schedule'?'Rozkład':p==='worktime'?'Praca':p==='videos'?'Filmy':p==='payments'?'Płatn.':p==='orders'?'Zamów.':p==='notes'?'Uwagi':p==='cennik'?'Cennik':'Admin';
+    var label=p==='schedule'?'Rozkład':p==='worktime'?'Praca':p==='videos'?'Filmy':p==='payments'?'Płatn.':p==='orders'?'Zamów.':p==='notes'?'Uwagi':p==='cennik'?'Cennik':p==='profile'?'Profil':'Admin';
     var btn=document.createElement('button');
     btn.className='nav-btn'+(p===activePage?' active':'');
     btn.id='nb-'+p;
@@ -884,7 +886,6 @@ function buildNav(activePage){
 }
 
 function showPage3(name){
-  var pb=document.getElementById('profile-btn-bar');if(pb)pb.style.display='block';
   document.getElementById('home-screen').classList.remove('active');
   document.querySelectorAll('.page').forEach(function(p){p.classList.remove('active');});
   var pg=document.getElementById('page-'+name);if(pg)pg.classList.add('active');
