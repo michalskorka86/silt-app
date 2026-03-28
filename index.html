@@ -1979,7 +1979,8 @@ async function loadProfile() {
   try {
   var qbtn = document.getElementById('profile-quick-btn');
   if(qbtn && udata) qbtn.innerHTML = (udata.avatar||'🎯') + ' ' + (udata.firstName||'Mój profil');
-  var uid = cu.uid;
+  var uid = (isAdmin && window._profileUid) ? window._profileUid : cu.uid;
+  var viewingOther = !!(isAdmin && window._profileUid && window._profileUid !== cu.uid);
   var usnap = await getDb().collection('users').doc(uid).get();
   var udata = usnap.data() || {};
   var avatar = udata.avatar || '🎯';
