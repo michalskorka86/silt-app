@@ -1553,147 +1553,177 @@ async function syncFromGcal() {
   if (!gcalToken) return;
   showToast('Synchronizuję z Google Calendar...');
   var now = new Date();
+  var cutoff = new Date(now.getTime() - 5 * 24 * 60 * 60 * 1000); // 5 days ago
   var from = new Date(now.getFullYear(), now.getMonth()-1, 1).toISOString();
   var to   = new Date(now.getFullYear(), now.getMonth()+6, 0).toISOString();
-  var imported = 0;
+
+  // Step 1: Delete old past reservations (older than 5 days) that came from GCal
+  try {
+    var oldSnap = await getDb().collection('schedule').get();
+    var toDelete = oldSnap.docs.filter(function(doc) {
+      var d = doc.data();
+      if (!d.gcalEventId) return false; // keep manually added
+      var date = new Date(d.date);
+      return date < cutoff;
+    });
+    for (var di = 0; di < toDelete.length; di++) {
+      await toDelete[di].ref.delete();
+    }
+    if (toDelete.length) showToast('Usunięto ' + toDelete.length + ' starych rezerwacji');
+  } catch(e) { console.warn('Delete old error:', e); }
+
+  // Step 2: Get all current GCal-imported docs from Firestore (for comparison)
+  var fsSnap = await getDb().collection('schedule').get();
+  var fsMap = {}; // gcalEventId -> doc
+  fsSnap.docs.forEach(function(doc) {
+    var d = doc.data();
+    if (d.gcalEventId) fsMap[d.gcalEventId] = {id: doc.id, data: d};
+  });
+
+  var imported = 0, updated = 0;
+  var seenCalIds = {};
+
   for (var type in GCAL_MAP) {
-    if (Object.prototype.hasOwnProperty.call(GCAL_MAP, type)) {
-      var calId = GCAL_MAP[type];
-      // skip duplicates (same calId used for multiple types)
-      // skip if this calId was already processed
-      var alreadySeen = false;
-      var keys = Object.keys(GCAL_MAP);
-      for (var ki = 0; ki < keys.indexOf(type); ki++) {
-        if (GCAL_MAP[keys[ki]] === calId) { alreadySeen = true; break; }
-      }
-      if (alreadySeen) continue;
-      try {
-        var url = 'https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(calId) +
-          '/events?timeMin=' + encodeURIComponent(from) + '&timeMax=' + encodeURIComponent(to) +
-          '&singleEvents=true&orderBy=startTime&maxResults=2500';
-        var resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + gcalToken } });
-        var data = await resp.json();
-        if (!data.items) continue;
-        for (var i = 0; i < data.items.length; i++) {
-          var ev = data.items[i];
-          // Check if already imported (has fieldops-id in description)
-          var desc = ev.description || '';
-          var match = desc.match(/\[fieldops-id:([^\]]+)\]/);
-          if (match) continue; // already synced from app
-          // Parse date and time
-          var startStr = ev.start.dateTime || ev.start.date;
-          var d = new Date(startStr);
-          var dateStr = d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate());
-          var startTime = ev.start.dateTime ? pad(d.getHours())+':'+pad(d.getMinutes()) : '09:00';
-          var endD = ev.end && ev.end.dateTime ? new Date(ev.end.dateTime) : null;
-          var endTime = endD ? pad(endD.getHours())+':'+pad(endD.getMinutes()) : '';
-          // Detect type from calendar
-          var evType = type;
-          // Check if already in Firestore by gcalEventId
-          var existing = await getDb().collection('schedule').where('gcalEventId','==',ev.id).get();
-          if (!existing.empty) continue;
-          // Import
-          var summaryText = (ev.summary || '').trim();
-          var fullDesc = (ev.description || '').replace(/<[^>]+>/g, ' ').replace(/&amp;/g,'&').replace(/&nbsp;/g,' ').trim();
+    if (!Object.prototype.hasOwnProperty.call(GCAL_MAP, type)) continue;
+    var calId = GCAL_MAP[type];
+    if (seenCalIds[calId]) continue;
+    seenCalIds[calId] = true;
 
-          // Remove leading P (potwierdzona) if present
-          var workText = summaryText.replace(/^P\s*/i, '').trim();
+    try {
+      var url = 'https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(calId) +
+        '/events?timeMin=' + encodeURIComponent(from) + '&timeMax=' + encodeURIComponent(to) +
+        '&singleEvents=true&orderBy=startTime&maxResults=2500';
+      var resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + gcalToken } });
+      var data = await resp.json();
+      if (!data.items) continue;
 
-          // Parse persons: "10 os." or "6/8 os." (take max)
-          var personsMatch = workText.match(/^(\d+)(?:\s*\/\s*(\d+))?\s*os[oó]?b?\.?\s*/i);
-          var parsedPersons = 0;
-          if (personsMatch) {
-            var pn1 = parseInt(personsMatch[1]);
-            var pn2 = personsMatch[2] ? parseInt(personsMatch[2]) : 0;
-            parsedPersons = pn2 > pn1 ? pn2 : pn1;
-          }
-          var afterPersons = personsMatch ? workText.slice(personsMatch[0].length).trim() : workText;
+      for (var i = 0; i < data.items.length; i++) {
+        var ev = data.items[i];
+        var desc = (ev.description || '').replace(/<[^>]+>/g, ' ').trim();
 
-          // Extract organizer: first 2 words (first name + last name)
-          var words = afterPersons.split(/\s+/).filter(Boolean);
-          var nameWords = [];
-          for (var wi = 0; wi < words.length && wi < 2; wi++) {
-            // Stop if word is a phone number (9+ digits)
-            if (/^[0-9]{7,}$/.test(words[wi])) break;
-            nameWords.push(words[wi]);
-          }
-          var organizerName = nameWords.join(' ') || 'Import z GCal';
-          var afterName = words.slice(nameWords.length).join(' ').trim();
+        // Skip events created FROM our app (have fieldops-id marker)
+        if (/\[fieldops-id:[^\]]+\]/.test(desc)) continue;
 
-          // Remove phone numbers: +48..., 00XX..., 9-digit numbers with spaces/dashes
-          function removePhones(str) {
-            return str
-              .replace(/[+]?[0-9]{2,3}[-\s]?[0-9]{3}[-\s]?[0-9]{3}[-\s]?[0-9]{3}/g, '')
-              .replace(/[+]?[0-9]{2,3}[-\s]?[0-9]{2,3}[-\s]?[0-9]{2,3}[-\s]?[0-9]{2,3}/g, '')
-              .replace(/(^|\s)[0-9]{7,}(\s|$)/g, ' ')
-              .replace(/\s{2,}/g, ' ')
-              .trim();
-          }
-          var noPhones = removePhones(afterName);
-          var cleanDesc = removePhones(fullDesc);
+        // Parse event data
+        var startStr = ev.start.dateTime || ev.start.date;
+        var d = new Date(startStr);
+        var dateStr = d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate());
+        var startTime = ev.start.dateTime ? pad(d.getHours())+':'+pad(d.getMinutes()) : '09:00';
 
-          // Combine: notes from summary (after name, no phone) + full description
-          var combinedNotes = '';
-          if (noPhones) combinedNotes += noPhones;
-          if (cleanDesc && cleanDesc !== summaryText) {
-            if (combinedNotes) combinedNotes += '\n' + cleanDesc;
-            else combinedNotes = cleanDesc;
-          }
-          combinedNotes = combinedNotes.replace(/[\n]{3,}/g, '\n\n').trim();
+        // Parse summary
+        var summaryText = (ev.summary || '').trim();
+        var workText = summaryText.replace(/^P\s*/i, '').trim();
 
-          // Detect extras
-          var searchText = (summaryText + ' ' + fullDesc).toLowerCase();
-          var detectedExtras = [];
-          var extrasMap = [
-            {keys:['catering open','grill open','open grill'], val:'Catering Open'},
-            {keys:['catering podstawowy','grill podstawowy','catering maly','catering mały'], val:'Catering Podstawowy'},
-            {keys:['grill sam','sam grill','samo grill','wynajem grilla','wynajem grill'], val:'Grill'},
-            {keys:['ognisko z kielbaskami','ognisko z kiełbaskami','ognisko kielbas'], val:'Ognisko z Kiełbaskami'},
-            {keys:['ognisko samo','samo ognisko','ognisko bez'], val:'Ognisko Samo'},
-            {keys:['gopro','go pro','kamerka'], val:'GoPro'},
-            {keys:['dyplom'], val:'Dyplomy'},
-            {keys:['puchar'], val:'Puchar'},
-            {keys:['quad'], val:'Quady'},
-            {keys:['strzelnic'], val:'Strzelnica'},
-            {keys:['fotograf','foto ','zdj'], val:'Fotograf'},
-          ];
-          extrasMap.forEach(function(ex) {
-            for (var ki = 0; ki < ex.keys.length; ki++) {
-              if (searchText.indexOf(ex.keys[ki]) !== -1) {
-                if (detectedExtras.indexOf(ex.val) === -1) detectedExtras.push(ex.val);
-                break;
-              }
+        var personsMatch = workText.match(/^(\d+)(?:\s*\/\s*(\d+))?\s*os[oó]?b?\.?\s*/i);
+        var parsedPersons = 0;
+        if (personsMatch) {
+          var pn1 = parseInt(personsMatch[1]);
+          var pn2 = personsMatch[2] ? parseInt(personsMatch[2]) : 0;
+          parsedPersons = pn2 > pn1 ? pn2 : pn1;
+        }
+        var afterPersons = personsMatch ? workText.slice(personsMatch[0].length).trim() : workText;
+        var words = afterPersons.split(/\s+/).filter(Boolean);
+        var nameWords = [];
+        for (var wi = 0; wi < words.length && wi < 2; wi++) {
+          if (/^[0-9]{7,}$/.test(words[wi])) break;
+          nameWords.push(words[wi]);
+        }
+        var organizerName = nameWords.join(' ') || 'Import z GCal';
+        var afterName = words.slice(nameWords.length).join(' ').trim();
+
+        function removePhones(str) {
+          return str
+            .replace(/[+]?[0-9]{2,3}[-\s]?[0-9]{3}[-\s]?[0-9]{3}[-\s]?[0-9]{3}/g, '')
+            .replace(/(^|\s)[0-9]{7,}(\s|$)/g, ' ')
+            .replace(/\s{2,}/g, ' ').trim();
+        }
+        var noPhones = removePhones(afterName);
+        var cleanDesc = removePhones(desc);
+        var combinedNotes = noPhones;
+        if (cleanDesc && cleanDesc !== summaryText) {
+          combinedNotes += (combinedNotes ? '\n' : '') + cleanDesc;
+        }
+        combinedNotes = combinedNotes.replace(/[\n]{3,}/g, '\n\n').trim();
+
+        var searchText = (summaryText + ' ' + desc).toLowerCase();
+        var detectedExtras = [];
+        var extrasMap = [
+          {keys:['catering open','grill open','open grill'], val:'Catering Open'},
+          {keys:['catering podstawowy','grill podstawowy','catering maly','catering mały'], val:'Catering Podstawowy'},
+          {keys:['grill sam','sam grill','samo grill','wynajem grilla'], val:'Grill'},
+          {keys:['ognisko z kielbaskami','ognisko z kiełbaskami'], val:'Ognisko z Kiełbaskami'},
+          {keys:['ognisko samo','samo ognisko'], val:'Ognisko Samo'},
+          {keys:['gopro','go pro','kamerka'], val:'GoPro'},
+          {keys:['dyplom'], val:'Dyplomy'},
+          {keys:['puchar'], val:'Puchar'},
+          {keys:['quad'], val:'Quady'},
+          {keys:['strzelnic'], val:'Strzelnica'},
+          {keys:['fotograf','foto '], val:'Fotograf'},
+        ];
+        extrasMap.forEach(function(ex) {
+          for (var ki = 0; ki < ex.keys.length; ki++) {
+            if (searchText.indexOf(ex.keys[ki]) !== -1) {
+              if (detectedExtras.indexOf(ex.val) === -1) detectedExtras.push(ex.val);
+              break;
             }
-          });
-          if (detectedExtras.indexOf('Catering Open') !== -1) {
-            detectedExtras = detectedExtras.filter(function(x){ return x !== 'Grill'; });
           }
+        });
+        if (detectedExtras.indexOf('Catering Open') !== -1) {
+          detectedExtras = detectedExtras.filter(function(x){ return x !== 'Grill'; });
+        }
+        var hasDeposit = /zadatek|zaliczka|zal\b|byl zal|wplacono/i.test(searchText);
 
-          // Deposit detection
-          var hasDeposit = /zadatek|zaliczka|zal\b|byl zal|byl zadatek|wplacono|wplata/i.test(searchText);
+        var evType = type;
+        // Determine which type based on calId
+        for (var t in GCAL_MAP) {
+          if (GCAL_MAP[t] === calId) { evType = t; break; }
+        }
 
-          await getDb().collection('schedule').add({
-            date: dateStr, startTime: startTime, endTime: '',
-            organizer: organizerName,
-            persons: parsedPersons, type: evType,
-            extras: detectedExtras,
-            notes: combinedNotes,
-            deposit: hasDeposit,
-            gcalEventId: ev.id, gcalCalId: calId,
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-          });
+        var docData = {
+          date: dateStr, startTime: startTime, endTime: '',
+          organizer: organizerName, persons: parsedPersons,
+          type: evType, extras: detectedExtras,
+          notes: combinedNotes, deposit: hasDeposit,
+          gcalEventId: ev.id, gcalCalId: calId,
+          gcalUpdated: ev.updated || ''
+        };
+
+        // Check if already exists in Firestore
+        if (fsMap[ev.id]) {
+          // UPDATE if gcal event was modified
+          var existing = fsMap[ev.id];
+          if (existing.data.gcalUpdated !== ev.updated) {
+            // Only update GCal-parsed fields, keep manual edits to extras/notes if user edited
+            await getDb().collection('schedule').doc(existing.id).update({
+              date: dateStr, startTime: startTime,
+              organizer: organizerName, persons: parsedPersons,
+              type: evType, extras: detectedExtras,
+              notes: combinedNotes, deposit: hasDeposit,
+              gcalUpdated: ev.updated || ''
+            });
+            updated++;
+          }
+        } else {
+          // NEW - import
+          docData.createdAt = firebase.firestore.FieldValue.serverTimestamp();
+          await getDb().collection('schedule').add(docData);
           imported++;
         }
-      } catch(e) { console.warn('Sync error for', type, e); }
-    }
+      }
+    } catch(e) { console.warn('Sync error for', type, e); }
   }
-  showToast('Zaimportowano ' + imported + ' wydarzeń z Google Calendar!');
+
+  var msg = 'Synchronizacja gotowa!';
+  if (imported) msg += ' Nowe: ' + imported;
+  if (updated) msg += ' Zaktualizowane: ' + updated;
+  showToast(msg);
   if (selDate) loadDayEvs(selDate);
   fetchMonthEvs(calY, calM, function(d){evCache=d;});
 }
 
-// ===== REGISTER FUNCTIONS AS WINDOW ALIASES =====
-// ===== CENNIK =====
+
+
+// ===== CENNIK DATA =====
 var cennikData = [
   {order:0, cat:'Paintball Klasyczny 0.68 cal', color:'#c49a8a', note:'max. 150 graczy', items:[
     {name:'Pakiet BASIC — 200 kul (~2-2,5h)', price:'90 zł/os'},
@@ -1736,9 +1766,9 @@ var cennikData = [
     {name:'Samo ognisko (ławki, stoły, drewno ~2h, kijki)', price:'100 zł/grupa'},
   ]},
   {order:8, cat:'Grill', color:'#ff6633', note:'min. 10 osób', items:[
-    {name:'Pakiet Podstawowy (kiełbaska, kurczak/boczek, karkówka, napoje ~1l, pieczywo)', price:'50 zł/os'},
-    {name:'Pakiet OPEN (2-3 szt. każdego, napoje ~1,5l, surówki)', price:'70 zł/os'},
-    {name:'Wynajem samego grilla (brykiet/węgiel, ławki, stoły)', price:'100 zł/grupa'},
+    {name:'Pakiet Podstawowy', price:'50 zł/os'},
+    {name:'Pakiet OPEN', price:'70 zł/os'},
+    {name:'Wynajem samego grilla', price:'100 zł/grupa'},
   ]},
   {order:9, cat:'Opcje dodatkowe', color:'#4dd0e1', note:'', items:[
     {name:'Namiot ekspresowy 3×6m', price:'200 zł/szt'},
@@ -1746,14 +1776,14 @@ var cennikData = [
     {name:'Oświetlenie LED z agregatem (5h)', price:'350 zł'},
     {name:'Oświetlenie z pochodni i świeczek', price:'200 zł'},
     {name:'Pozostanie po 22:00', price:'100 zł/h'},
-    {name:'Pakiet imprezowy (namiot, nagłośnienie, oświetlenie, agregat, teren do 24:00)', price:'1000 zł/grupa'},
+    {name:'Pakiet imprezowy', price:'1000 zł/grupa'},
   ]},
   {order:10, cat:'Atrakcje specjalne', color:'#a0a4e8', note:'', items:[
     {name:'Quady — 1 quad (maks. 2 osoby)', price:'600 zł/h'},
-    {name:'Jazda samochodami terenowymi z instruktorem (4-6 os.)', price:'600 zł/h'},
-    {name:'Strzelnica z instruktorem (cały czas imprezy)', price:'700 zł'},
+    {name:'Jazda samochodami terenowymi z instruktorem', price:'600 zł/h'},
+    {name:'Strzelnica z instruktorem', price:'700 zł'},
     {name:'Kamerka GoPro', price:'50 zł/szt'},
-    {name:'Fotograf (200-300 zdjęć, lustrzanka NIKON)', price:'250 zł/impreza'},
+    {name:'Fotograf (200-300 zdjęć)', price:'250 zł/impreza'},
     {name:'Szkolenie Taktyczne GROM/OSŻW', price:'od 1000 zł/grupa'},
   ]},
 ];
@@ -1769,14 +1799,12 @@ function loadCennik() {
       window._currentCennikCats = cats;
       renderCennik(cats);
     } else {
-      // First time - save default data to Firestore so it gets IDs
       var batch = getDb().batch();
       cennikData.forEach(function(c) {
         var ref = getDb().collection('cennik').doc();
         batch.set(ref, c);
       });
       batch.commit().then(function() {
-        // Reload from Firestore now that it has IDs
         return getDb().collection('cennik').orderBy('order').get();
       }).then(function(snap2) {
         var cats = snap2.docs.map(function(d){return Object.assign({id:d.id},d.data());});
@@ -1792,12 +1820,9 @@ function renderCennik(cats) {
   var el = document.getElementById('cennik-content');
   if (!el) return;
   var html = '';
-
   if (isAdmin) {
-    html += '<div style="background:#c8f00011;border:1px solid var(--accent);border-radius:12px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--accent)">';
-    html += '★ Admin: kliknij pozycję cennika aby ją edytować</div>';
+    html += '<div style="background:#c8f00011;border:1px solid var(--accent);border-radius:12px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--accent)">★ Admin: kliknij Edytuj aby zmienić pozycje cennika</div>';
   }
-
   cats.forEach(function(cat) {
     var c = cat.color || '#c8f000';
     html += '<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden;margin-bottom:14px">';
@@ -1814,16 +1839,13 @@ function renderCennik(cats) {
     });
     if (isAdmin && cat.id) {
       html += '<div style="padding:10px 16px;border-top:1px solid var(--border)">';
-      html += '<button class="edit-cennik-cat" data-id="' + cat.id + '" style="background:var(--accent3);color:#000;border:none;border-radius:6px;padding:6px 14px;font-weight:700;font-size:13px;cursor:pointer;margin-right:6px">✏️ Edytuj kategorię</button>';
+      html += '<button class="edit-cennik-cat" data-id="' + cat.id + '" style="background:var(--accent3);color:#000;border:none;border-radius:6px;padding:6px 14px;font-weight:700;font-size:13px;cursor:pointer">✏️ Edytuj kategorię</button>';
       html += '</div>';
-    } else if (isAdmin && !cat.id) {
-      html += '<div style="padding:10px 16px;border-top:1px solid var(--border);font-size:12px;color:var(--muted)">Odśwież stronę aby edytować</div>';
     }
     html += '</div>';
   });
-
   if (isAdmin) {
-    html += '<button onclick="addCennikCat()" style="display:block;width:100%;padding:13px;border-radius:14px;border:2px dashed var(--accent);background:transparent;color:var(--accent);font-weight:700;font-size:15px;cursor:pointer;letter-spacing:1px;text-transform:uppercase">+ Dodaj kategorię</button>';
+    html += '<button onclick="addCennikCat()" style="display:block;width:100%;padding:13px;border-radius:14px;border:2px dashed var(--accent);background:transparent;color:var(--accent);font-weight:700;font-size:15px;cursor:pointer;text-transform:uppercase">+ Dodaj kategorię</button>';
   }
   el.innerHTML = html;
   el.addEventListener('click', function(e) {
@@ -1833,77 +1855,55 @@ function renderCennik(cats) {
 }
 
 function editCennikCat(id) {
-  if (!id || id === '') {
-    showCennikModal(null, null);
-    return;
-  }
-  // Fetch fresh data from Firestore
+  if (!id || id === '') { showCennikModal(null, null); return; }
   getDb().collection('cennik').doc(id).get().then(function(snap) {
-    if (snap.exists) {
-      showCennikModal(Object.assign({id: snap.id}, snap.data()), id);
-    } else {
-      showToast('Nie znaleziono kategorii', true);
-    }
-  }).catch(function() {
-    showToast('Błąd ładowania kategorii', true);
-  });
+    if (snap.exists) { showCennikModal(Object.assign({id:snap.id}, snap.data()), id); }
+    else { showToast('Nie znaleziono kategorii', true); }
+  }).catch(function() { showToast('Błąd ładowania', true); });
 }
 
-function addCennikCat() {
-  showCennikModal(null, null);
-}
+function addCennikCat() { showCennikModal(null, null); }
 
 function showCennikModal(cat, id) {
   var existing = document.getElementById('cennik-modal');
   if (existing) existing.remove();
-
   var items = cat ? (cat.items || []) : [];
   var itemsHtml = '';
   items.forEach(function(item, i) {
-    itemsHtml +=
-      '<div style="display:flex;gap:8px;margin-bottom:6px" id="ci-' + i + '">' +
-      '<input style="flex:2;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px" value="' + (item.name||'').replace(/"/g,'&quot;') + '" placeholder="Nazwa pakietu" id="cin-' + i + '">' +
+    itemsHtml += '<div style="display:flex;gap:8px;margin-bottom:6px" id="ci-' + i + '">' +
+      '<input style="flex:2;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px" value="' + (item.name||'').replace(/"/g,'&quot;') + '" placeholder="Nazwa" id="cin-' + i + '">' +
       '<input style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px" value="' + (item.price||'').replace(/"/g,'&quot;') + '" placeholder="Cena" id="cip-' + i + '">' +
-      '<button class="rm-item" data-i="' + i + '" style="background:var(--accent2);color:#fff;border:none;border-radius:6px;padding:8px 10px;cursor:pointer">✕</button>' +
-      '</div>';
+      '<button class="rm-item" data-i="' + i + '" style="background:var(--accent2);color:#fff;border:none;border-radius:6px;padding:8px 10px;cursor:pointer">✕</button></div>';
   });
-
   var modal = document.createElement('div');
   modal.id = 'cennik-modal';
   modal.style.cssText = 'position:fixed;inset:0;background:#000d;z-index:600;display:flex;align-items:center;justify-content:center;padding:16px';
   modal.innerHTML =
     '<div style="background:var(--surface);border-radius:14px;width:100%;max-width:500px;max-height:90vh;overflow-y:auto">' +
     '<div style="padding:16px 20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface)">' +
-    '<div style="font-weight:900;font-size:18px;text-transform:uppercase;color:var(--accent)">' + (cat ? 'Edytuj kategorię' : 'Nowa kategoria') + '</div>' +
-    '<button id="cm-close" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer">✕</button>' +
-    '</div>' +
+    '<div style="font-weight:900;font-size:18px;text-transform:uppercase;color:var(--accent)">' + (cat?'Edytuj':'Nowa') + ' kategoria</div>' +
+    '<button id="cm-close" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer">✕</button></div>' +
     '<div style="padding:18px">' +
     '<label style="font-size:11px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:6px">Nazwa kategorii</label>' +
-    '<input id="cm-cat" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:10px;font-size:14px;margin-bottom:12px" value="' + (cat ? (cat.cat||'').replace(/"/g,'&quot;') : '') + '" placeholder="np. Paintball Klasyczny">' +
+    '<input id="cm-cat" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:10px;font-size:14px;margin-bottom:12px" value="' + (cat?cat.cat||'':'') + '">' +
     '<label style="font-size:11px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:6px">Notatka</label>' +
-    '<input id="cm-note" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:10px;font-size:14px;margin-bottom:12px" value="' + (cat ? (cat.note||'') : '') + '" placeholder="np. max. 150 graczy">' +
+    '<input id="cm-note" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:10px;font-size:14px;margin-bottom:12px" value="' + (cat?cat.note||'':'') + '">' +
     '<label style="font-size:11px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:6px">Kolor</label>' +
-    '<input id="cm-color" type="color" style="width:60px;height:36px;border:none;background:none;cursor:pointer;margin-bottom:14px" value="' + (cat ? cat.color : '#c8f000') + '">' +
+    '<input id="cm-color" type="color" style="width:60px;height:36px;border:none;background:none;cursor:pointer;margin-bottom:14px" value="' + (cat?cat.color:'#c8f000') + '">' +
     '<label style="font-size:11px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:8px">Pozycje cennika</label>' +
     '<div id="cm-items">' + itemsHtml + '</div>' +
     '<button id="cm-add-item" style="background:var(--surface2);border:1px dashed var(--border);color:var(--muted);border-radius:8px;padding:8px;width:100%;cursor:pointer;font-size:13px;margin-bottom:14px">+ Dodaj pozycję</button>' +
-    '<button id="cm-save" style="display:block;width:100%;padding:13px;border-radius:14px;border:none;background:var(--accent);color:#000;font-weight:700;font-size:16px;cursor:pointer;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">💾 Zapisz</button>' +
+    '<button id="cm-save" style="display:block;width:100%;padding:13px;border-radius:14px;border:none;background:var(--accent);color:#000;font-weight:700;font-size:16px;cursor:pointer;margin-bottom:8px">💾 Zapisz</button>' +
     (id ? '<button id="cm-del" style="display:block;width:100%;padding:10px;border-radius:14px;border:none;background:var(--accent2);color:#fff;font-weight:700;font-size:14px;cursor:pointer">🗑️ Usuń kategorię</button>' : '') +
     '</div></div>';
-
   document.body.appendChild(modal);
-
-  // Attach events safely (no inline onclick with params)
-  document.getElementById('cm-close').onclick = function() { modal.remove(); };
-  document.getElementById('cm-add-item').onclick = function() { addCennikItem(); };
-  document.getElementById('cm-save').onclick = function() { saveCennikCat(id || ''); };
-  if (id) {
-    document.getElementById('cm-del').onclick = function() { deleteCennikCat(id); };
-  }
+  document.getElementById('cm-close').onclick = function(){ modal.remove(); };
+  document.getElementById('cm-add-item').onclick = function(){ addCennikItem(); };
+  document.getElementById('cm-save').onclick = function(){ saveCennikCat(id||''); };
+  if (id) document.getElementById('cm-del').onclick = function(){ deleteCennikCat(id); };
   modal.addEventListener('click', function(e) {
     if (e.target.classList.contains('rm-item')) {
-      var idx = e.target.getAttribute('data-i');
-      var el = document.getElementById('ci-' + idx);
+      var el = document.getElementById('ci-' + e.target.getAttribute('data-i'));
       if (el) el.remove();
     }
   });
@@ -1915,16 +1915,10 @@ function addCennikItem() {
   var div = document.createElement('div');
   div.style.cssText = 'display:flex;gap:8px;margin-bottom:6px';
   div.id = 'ci-' + i;
-  div.innerHTML =
-    '<input style="flex:2;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px" placeholder="Nazwa pakietu" id="cin-' + i + '">' +
+  div.innerHTML = '<input style="flex:2;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px" placeholder="Nazwa" id="cin-' + i + '">' +
     '<input style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px" placeholder="Cena" id="cip-' + i + '">' +
-    '<button onclick="removeCennikItem(' + i + ')" style="background:var(--accent2);color:#fff;border:none;border-radius:6px;padding:8px 10px;cursor:pointer">✕</button>';
+    '<button class="rm-item" data-i="' + i + '" style="background:var(--accent2);color:#fff;border:none;border-radius:6px;padding:8px 10px;cursor:pointer">✕</button>';
   cont.appendChild(div);
-}
-
-function removeCennikItem(i) {
-  var el = document.getElementById('ci-' + i);
-  if (el) el.remove();
 }
 
 async function saveCennikCat(id) {
@@ -1937,30 +1931,15 @@ async function saveCennikCat(id) {
   Array.from(cont.children).forEach(function(row) {
     var nameEl = row.querySelector('[id^="cin-"]');
     var priceEl = row.querySelector('[id^="cip-"]');
-    if (nameEl && priceEl && nameEl.value.trim()) {
-      items.push({name: nameEl.value.trim(), price: priceEl.value.trim()});
-    }
+    if (nameEl && priceEl && nameEl.value.trim()) items.push({name:nameEl.value.trim(), price:priceEl.value.trim()});
   });
-  var snap = await getDb().collection('cennik').get();
-  var existingOrder = id ? (snap.docs.find(function(d){return d.id===id;}) || {data:function(){return {};}}).data().order : snap.size;
-  var data = {cat: cat, note: note, color: color, items: items, order: existingOrder !== undefined ? existingOrder : snap.size};
   try {
-    if (id) {
-      await getDb().collection('cennik').doc(id).update(data);
-    } else {
-      // First time - save all default data if empty
-      if (snap.empty) {
-        var batch = getDb().batch();
-        cennikData.forEach(function(c) {
-          batch.set(getDb().collection('cennik').doc(), c);
-        });
-        await batch.commit();
-        // Now add the new one
-        await getDb().collection('cennik').add(data);
-      } else {
-        await getDb().collection('cennik').add(data);
-      }
-    }
+    var snap = await getDb().collection('cennik').get();
+    var existingDoc = id ? snap.docs.find(function(d){return d.id===id;}) : null;
+    var existingOrder = existingDoc ? existingDoc.data().order : snap.size;
+    var data = {cat:cat, note:note, color:color, items:items, order:existingOrder !== undefined ? existingOrder : snap.size};
+    if (id) { await getDb().collection('cennik').doc(id).update(data); }
+    else { await getDb().collection('cennik').add(data); }
     document.getElementById('cennik-modal').remove();
     showToast('Cennik zapisany!');
     loadCennik();
@@ -1975,109 +1954,22 @@ async function deleteCennikCat(id) {
   loadCennik();
 }
 
-
-// ===== PUSH NOTIFICATIONS =====
-var VAPID_KEY = 'BG9N9V8yhj4v13XY4RKqW6uCaAwOFWG3EcIBO9qIRNwBOTkNaS2yi5jMc9l9_p1XyrYYRKsXI-4fbiIY8do4560';
-var messaging = null;
-
-function initMessaging() {
-  try {
-    messaging = firebase.messaging();
-  } catch(e) {
-    console.warn('Messaging not supported:', e);
-    return;
-  }
-}
-
-async function requestNotificationPermission() {
-  if (!messaging) return;
-  try {
-    var permission = await Notification.requestPermission();
-    if (permission === 'granted') {
-      var token = await messaging.getToken({ vapidKey: VAPID_KEY });
-      if (token) {
-        // Save token to user's Firestore doc
-        await getDb().collection('users').doc(cu.uid).update({ fcmToken: token });
-        console.log('FCM token saved');
-      }
-    }
-  } catch(e) {
-    console.warn('Notification permission error:', e);
-  }
-}
-
-async function sendPushToAdmin(title, body) {
-  // Save notification to Firestore - admin will receive it via FCM
-  try {
-    await getDb().collection('notifications').add({
-      title: title,
-      body: body,
-      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-      read: false,
-      fromUser: cud ? cud.firstName + ' ' + cud.lastName : 'Instruktor'
-    });
-  } catch(e) {
-    console.warn('Notification error:', e);
-  }
-}
-
-function listenForNotifications() {
-  if (!isAdmin) return;
-  // Listen for new notifications in Firestore
-  getDb().collection('notifications')
-    .where('read', '==', false)
-    .onSnapshot(function(snap) {
-      snap.docChanges().forEach(function(change) {
-        if (change.type === 'added') {
-          var data = change.doc.data();
-          // Don't show on first load (only new ones)
-          if (data.createdAt) {
-            var ts = data.createdAt.toDate ? data.createdAt.toDate() : new Date();
-            var age = (Date.now() - ts.getTime()) / 1000;
-            if (age < 10) {
-              // Show browser notification
-              if (Notification.permission === 'granted') {
-                new Notification(data.title, {
-                  body: data.body,
-                  icon: '/favicon.ico',
-                  badge: '/favicon.ico'
-                });
-              }
-              // Also show in-app toast
-              showToast('🔔 ' + data.title + ': ' + data.body);
-              // Mark as read
-              change.doc.ref.update({ read: true });
-            }
-          }
-        }
-      });
-    });
-}
-
-// ===== AVATARS =====
+// ===== AVATARS & PROFILE =====
 var AVATARS = ['🎯', '🔫', '💥', '🪖', '🦅', '🐯', '🦁', '🐺', '🦊', '🐸', '🤖', '👽', '🧟', '🥷', '🦸', '🎭', '🏴\u200d☠️', '👑', '🎪', '🚀', '🦄', '🐲', '🦖', '🦂', '🎮'];
 
-// ===== PROFILE =====
-function goProfile() {
-  showPage2('profile');
-}
+function goProfile() { showPage2('profile'); }
 
 async function loadProfile() {
   var el = document.getElementById('profile-content');
   if (!el) return;
   el.innerHTML = '<div class="empty">Ładowanie...</div>';
-  
   var uid = cu.uid;
   var usnap = await getDb().collection('users').doc(uid).get();
   var udata = usnap.data() || {};
   var avatar = udata.avatar || '🎯';
   var phone = udata.phone || '';
-  
-  // Get shifts for this user
   var shiftSnap = await getDb().collection('shifts').where('userId','==',uid).orderBy('startTime','desc').get();
   var shifts = shiftSnap.docs.map(function(d){return Object.assign({id:d.id},d.data());});
-  
-  // Monthly summary
   var now = new Date();
   var monthKey = now.getFullYear()+'-'+(now.getMonth()+1);
   var monthShifts = shifts.filter(function(s){
@@ -2086,142 +1978,87 @@ async function loadProfile() {
   });
   var totalMinMonth = monthShifts.reduce(function(acc,s){return acc+(s.duration||0);},0);
   var mH = Math.floor(totalMinMonth/60), mM = totalMinMonth%60;
-  
-  // Total all time
   var totalMin = shifts.reduce(function(acc,s){return acc+(s.duration||0);},0);
   var tH = Math.floor(totalMin/60), tM = totalMin%60;
-
-  // Average rating
   var ratingSnap = await getDb().collection('ratings').where('userId','==',uid).get();
   var ratings = ratingSnap.docs.map(function(d){return d.data().stars||0;});
   var avgRating = ratings.length ? (ratings.reduce(function(a,b){return a+b;},0)/ratings.length).toFixed(1) : null;
-
-  // Tasks
   var taskSnap = await getDb().collection('tasks').where('userId','==',uid).orderBy('createdAt','desc').get();
   var tasks = taskSnap.docs.map(function(d){return Object.assign({id:d.id},d.data());});
-
   var html = '';
-  
-  // Profile header
   html += '<div class="profile-header">';
-  html += '<div class="profile-avatar" id="avatar-btn" title="Zmień awatar">'+avatar+'</div>';
-  html += '<div style="flex:1">';
-  html += '<div style="font-weight:900;font-size:22px">'+udata.firstName+' '+udata.lastName+'</div>';
+  html += '<div class="profile-avatar" id="avatar-btn">'+avatar+'</div>';
+  html += '<div style="flex:1"><div style="font-weight:900;font-size:22px">'+udata.firstName+' '+udata.lastName+'</div>';
   html += '<div style="font-size:13px;color:var(--muted)">'+udata.email+'</div>';
   if(phone) html += '<div style="font-size:14px;color:var(--accent);margin-top:4px">📞 '+phone+'</div>';
-  if(avgRating) {
-    html += '<div style="margin-top:6px;font-size:15px">⭐ '+avgRating+' <span style="font-size:12px;color:var(--muted)">('+ratings.length+' ocen)</span></div>';
-  }
+  if(avgRating) html += '<div style="margin-top:6px;font-size:15px">⭐ '+avgRating+' <span style="font-size:12px;color:var(--muted)">('+ratings.length+' ocen)</span></div>';
   html += '</div></div>';
-
-  // Stats
   html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">';
-  html += '<div style="background:var(--surface2);border-radius:12px;padding:14px;text-align:center">';
-  html += '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Ten miesiąc</div>';
-  html += '<div style="font-size:28px;font-weight:900;color:var(--accent)">'+mH+'h '+mM+'m</div>';
-  html += '<div style="font-size:12px;color:var(--muted)">'+monthShifts.length+' zmian</div></div>';
-  html += '<div style="background:var(--surface2);border-radius:12px;padding:14px;text-align:center">';
-  html += '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Łącznie</div>';
-  html += '<div style="font-size:28px;font-weight:900;color:var(--accent)">'+tH+'h '+tM+'m</div>';
-  html += '<div style="font-size:12px;color:var(--muted)">'+shifts.length+' zmian</div></div>';
+  html += '<div style="background:var(--surface2);border-radius:12px;padding:14px;text-align:center"><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Ten miesiąc</div><div style="font-size:28px;font-weight:900;color:var(--accent)">'+mH+'h '+mM+'m</div><div style="font-size:12px;color:var(--muted)">'+monthShifts.length+' zmian</div></div>';
+  html += '<div style="background:var(--surface2);border-radius:12px;padding:14px;text-align:center"><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Łącznie</div><div style="font-size:28px;font-weight:900;color:var(--accent)">'+tH+'h '+tM+'m</div><div style="font-size:12px;color:var(--muted)">'+shifts.length+' zmian</div></div>';
   html += '</div>';
-
-  // Last 5 shifts
   if(shifts.length) {
     html += '<div class="section-title" style="margin-bottom:8px">Ostatnie zmiany</div>';
     shifts.slice(0,5).forEach(function(s) {
       var d = s.startTime ? (s.startTime.toDate ? s.startTime.toDate() : new Date(s.startTime)) : null;
       var dateStr = d ? d.toLocaleDateString('pl-PL') : '?';
       var dur = s.duration ? Math.floor(s.duration/60)+'h '+s.duration%60+'m' : '?';
-      html += '<div style="display:flex;justify-content:space-between;padding:10px 12px;background:var(--surface2);border-radius:8px;margin-bottom:6px">';
-      html += '<span style="font-size:14px">📅 '+dateStr+'</span>';
-      html += '<span style="font-weight:700;color:var(--accent)">'+dur+'</span>';
-      html += '</div>';
+      html += '<div style="display:flex;justify-content:space-between;padding:10px 12px;background:var(--surface2);border-radius:8px;margin-bottom:6px"><span style="font-size:14px">📅 '+dateStr+'</span><span style="font-weight:700;color:var(--accent)">'+dur+'</span></div>';
     });
   }
-
-  // Tasks
-  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin:16px 0 8px">';
-  html += '<div class="section-title" style="margin:0">Zadania</div>';
-  html += '<button onclick="openAddTask()" style="background:var(--accent);color:#000;border:none;border-radius:8px;padding:6px 14px;font-weight:700;font-size:13px;cursor:pointer">+ Dodaj</button>';
-  html += '</div>';
-  if(!tasks.length) {
-    html += '<div class="empty">Brak zadań</div>';
-  } else {
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin:16px 0 8px"><div class="section-title" style="margin:0">Zadania</div>';
+  html += '<button id="add-task-btn" style="background:var(--accent);color:#000;border:none;border-radius:8px;padding:6px 14px;font-weight:700;font-size:13px;cursor:pointer">+ Dodaj</button></div>';
+  if(!tasks.length) { html += '<div class="empty">Brak zadań</div>'; }
+  else {
     tasks.forEach(function(t) {
-      var statusIcon = t.status==='done' ? '✅' : t.status==='doing' ? '🔄' : '⭕';
-      var statusClass = t.status==='done' ? 'done' : t.status==='doing' ? 'doing' : '';
-      html += '<div class="task-card" data-tid="'+t.id+'">';
-      html += '<div class="task-status '+statusClass+'" data-tid="'+t.id+'" data-action="cycle-task">'+statusIcon+'</div>';
-      html += '<div style="flex:1">';
-      html += '<div style="font-size:14px;font-weight:600'+(t.status==='done'?';text-decoration:line-through;opacity:.5':'')+'">'+t.title+'</div>';
+      var sIcon = t.status==='done'?'✅':t.status==='doing'?'🔄':'⭕';
+      var sCls = t.status==='done'?'done':t.status==='doing'?'doing':'';
+      html += '<div class="task-card"><div class="task-status '+sCls+'" data-tid="'+t.id+'" data-action="cycle">'+sIcon+'</div>';
+      html += '<div style="flex:1"><div style="font-size:14px;font-weight:600'+(t.status==='done'?';text-decoration:line-through;opacity:.5':'')+'"">'+t.title+'</div>';
       if(t.desc) html += '<div style="font-size:12px;color:var(--muted);margin-top:2px">'+t.desc+'</div>';
-      html += '<div style="font-size:11px;color:var(--muted);margin-top:4px">';
-      html += t.status==='done'?'Zrealizowane':t.status==='doing'?'W trakcie':'Do zrobienia';
-      html += '</div></div>';
-      if(isAdmin || t.createdBy===cu.uid) {
-        html += '<button class="btn-sm bsd" style="padding:4px 8px;font-size:11px" data-tid="'+t.id+'" data-action="del-task">✕</button>';
-      }
+      html += '<div style="font-size:11px;color:var(--muted);margin-top:4px">'+(t.status==='done'?'Zrealizowane':t.status==='doing'?'W trakcie':'Do zrobienia')+'</div></div>';
+      if(isAdmin||t.createdBy===cu.uid) html += '<button class="btn-sm bsd" style="padding:4px 8px;font-size:11px" data-tid="'+t.id+'" data-action="del">✕</button>';
       html += '</div>';
     });
   }
-
-  // Admin section - add phone + rating
   if(isAdmin) {
     html += '<div style="background:var(--surface2);border:1px solid var(--accent);border-radius:12px;padding:14px;margin-top:16px">';
     html += '<div class="section-title" style="margin-bottom:10px;color:var(--accent)">★ Opcje Admina</div>';
-    html += '<label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Numer telefonu</label>';
-    html += '<div style="display:flex;gap:8px;margin-bottom:12px">';
-    html += '<input id="profile-phone" value="'+(phone||'')+'" placeholder="123 456 789" style="flex:1;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px;font-size:14px">';
-    html += '<button id="save-phone-btn" style="background:var(--accent);color:#000;border:none;border-radius:8px;padding:8px 14px;font-weight:700;cursor:pointer">Zapisz</button>';
-    html += '</div>';
+    html += '<label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Numer telefonu instruktora</label>';
+    html += '<div style="display:flex;gap:8px;margin-bottom:12px"><input id="profile-phone" value="'+(phone||'')+'" placeholder="123 456 789" style="flex:1;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px;font-size:14px">';
+    html += '<button id="save-phone-btn" style="background:var(--accent);color:#000;border:none;border-radius:8px;padding:8px 14px;font-weight:700;cursor:pointer">Zapisz</button></div>';
     html += '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Oceń pracę tego miesiąca</div>';
-    html += '<div style="display:flex;gap:6px;margin-bottom:4px" id="rating-stars">';
-    for(var i=1;i<=5;i++){
-      html += '<button class="star-btn" data-stars="'+i+'">⭐</button>';
-    }
-    html += '</div>';
-    html += '<button id="save-rating-btn" style="background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer;margin-top:4px">Zapisz ocenę</button>';
-    html += '</div>';
+    html += '<div style="display:flex;gap:6px;margin-bottom:8px" id="rating-stars">';
+    for(var i=1;i<=5;i++) html += '<button class="star-btn" data-stars="'+i+'">⭐</button>';
+    html += '</div><button id="save-rating-btn" style="background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer">Zapisz ocenę</button></div>';
   }
-
   el.innerHTML = html;
-
-  // Avatar button
   document.getElementById('avatar-btn').onclick = function(){ openAvatarPicker(uid, avatar); };
-
-  // Task actions
+  document.getElementById('add-task-btn').onclick = function(){ openAddTask(); };
   el.addEventListener('click', function(e) {
     var btn = e.target.closest('[data-action]');
     if (!btn) return;
     var action = btn.getAttribute('data-action');
     var tid = btn.getAttribute('data-tid');
-    if (action === 'cycle-task') cycleTaskStatus(tid);
-    if (action === 'del-task') deleteTask(tid);
+    if (action==='cycle') cycleTaskStatus(tid);
+    if (action==='del') deleteTask(tid);
   });
-
-  // Admin actions
-  if (isAdmin) {
+  if(isAdmin) {
     document.getElementById('save-phone-btn').onclick = async function() {
       var ph = document.getElementById('profile-phone').value.trim();
-      await getDb().collection('users').doc(uid).update({phone: ph});
+      await getDb().collection('users').doc(uid).update({phone:ph});
       showToast('Telefon zapisany!');
     };
     var selectedStars = 0;
     document.getElementById('rating-stars').onclick = function(e) {
       var btn = e.target.closest('[data-stars]');
-      if (!btn) return;
+      if(!btn) return;
       selectedStars = parseInt(btn.getAttribute('data-stars'));
-      document.querySelectorAll('#rating-stars .star-btn').forEach(function(b,i){
-        b.classList.toggle('active', i < selectedStars);
-      });
+      document.querySelectorAll('#rating-stars .star-btn').forEach(function(b,i){ b.classList.toggle('active', i<selectedStars); });
     };
     document.getElementById('save-rating-btn').onclick = async function() {
-      if (!selectedStars) { showToast('Wybierz ocenę', true); return; }
-      await getDb().collection('ratings').add({
-        userId: uid, stars: selectedStars, month: monthKey,
-        byAdmin: cu.uid, createdAt: firebase.firestore.FieldValue.serverTimestamp()
-      });
+      if(!selectedStars){ showToast('Wybierz ocenę',true); return; }
+      await getDb().collection('ratings').add({userId:uid,stars:selectedStars,month:monthKey,byAdmin:cu.uid,createdAt:firebase.firestore.FieldValue.serverTimestamp()});
       showToast('Ocena zapisana!');
       loadProfile();
     };
@@ -2229,22 +2066,18 @@ async function loadProfile() {
 }
 
 function openAvatarPicker(uid, current) {
-  var existing = document.getElementById('avatar-modal');
-  if (existing) existing.remove();
+  var ex = document.getElementById('avatar-modal'); if(ex) ex.remove();
   var modal = document.createElement('div');
   modal.id = 'avatar-modal';
   modal.style.cssText = 'position:fixed;inset:0;background:#000d;z-index:700;display:flex;align-items:center;justify-content:center;padding:16px';
-  var grid = AVATARS.map(function(a) {
-    return '<div class="avatar-opt'+(a===current?' selected':'')+'" data-avatar="'+a+'">'+a+'</div>';
-  }).join('');
+  var grid = AVATARS.map(function(a){ return '<div class="avatar-opt'+(a===current?' selected':'')+'" data-avatar="'+a+'">'+a+'</div>'; }).join('');
   modal.innerHTML = '<div style="background:var(--surface);border-radius:14px;padding:20px;max-width:360px;width:100%"><div style="font-weight:900;font-size:18px;color:var(--accent);margin-bottom:14px;text-transform:uppercase">Wybierz awatar</div><div class="avatar-grid">'+grid+'</div><button id="av-close" style="margin-top:12px;width:100%;padding:10px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;cursor:pointer;font-size:14px">Anuluj</button></div>';
   document.body.appendChild(modal);
   document.getElementById('av-close').onclick = function(){ modal.remove(); };
   modal.addEventListener('click', async function(e) {
     var opt = e.target.closest('[data-avatar]');
-    if (!opt) return;
-    var av = opt.getAttribute('data-avatar');
-    await getDb().collection('users').doc(uid).update({avatar: av});
+    if(!opt) return;
+    await getDb().collection('users').doc(uid).update({avatar:opt.getAttribute('data-avatar')});
     modal.remove();
     showToast('Awatar zmieniony!');
     loadProfile();
@@ -2252,34 +2085,25 @@ function openAvatarPicker(uid, current) {
 }
 
 function openAddTask() {
-  var existing = document.getElementById('task-modal');
-  if (existing) existing.remove();
+  var ex = document.getElementById('task-modal'); if(ex) ex.remove();
   var modal = document.createElement('div');
   modal.id = 'task-modal';
   modal.style.cssText = 'position:fixed;inset:0;background:#000d;z-index:700;display:flex;align-items:center;justify-content:center;padding:16px';
-  modal.innerHTML = '<div style="background:var(--surface);border-radius:14px;padding:20px;max-width:400px;width:100%"><div style="font-weight:900;font-size:18px;color:var(--accent);margin-bottom:14px;text-transform:uppercase">Nowe zadanie</div><label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Tytuł zadania</label><input id="task-title" placeholder="np. Sprawdź stan amunicji" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:10px;font-size:14px;margin-bottom:10px"><label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Opis (opcjonalnie)</label><input id="task-desc" placeholder="Dodatkowe informacje..." style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:10px;font-size:14px;margin-bottom:14px"><button id="task-save" style="width:100%;padding:13px;background:var(--accent);color:#000;border:none;border-radius:10px;font-weight:700;font-size:15px;cursor:pointer">Dodaj zadanie</button><button id="task-cancel" style="width:100%;padding:10px;background:none;border:none;color:var(--muted);cursor:pointer;margin-top:6px;font-size:14px">Anuluj</button></div>';
+  modal.innerHTML = '<div style="background:var(--surface);border-radius:14px;padding:20px;max-width:400px;width:100%"><div style="font-weight:900;font-size:18px;color:var(--accent);margin-bottom:14px;text-transform:uppercase">Nowe zadanie</div><label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Tytuł</label><input id="task-title" placeholder="np. Sprawdź stan amunicji" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:10px;font-size:14px;margin-bottom:10px"><label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Opis (opcjonalnie)</label><input id="task-desc" placeholder="Dodatkowe informacje..." style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:10px;font-size:14px;margin-bottom:14px"><button id="task-save" style="width:100%;padding:13px;background:var(--accent);color:#000;border:none;border-radius:10px;font-weight:700;font-size:15px;cursor:pointer">Dodaj zadanie</button><button id="task-cancel" style="width:100%;padding:10px;background:none;border:none;color:var(--muted);cursor:pointer;margin-top:6px;font-size:14px">Anuluj</button></div>';
   document.body.appendChild(modal);
   document.getElementById('task-cancel').onclick = function(){ modal.remove(); };
   document.getElementById('task-save').onclick = async function() {
     var title = document.getElementById('task-title').value.trim();
-    if (!title) { showToast('Wpisz tytuł zadania', true); return; }
-    var desc = document.getElementById('task-desc').value.trim();
-    await getDb().collection('tasks').add({
-      userId: cu.uid, title: title, desc: desc,
-      status: 'todo', createdBy: cu.uid,
-      createdAt: firebase.firestore.FieldValue.serverTimestamp()
-    });
-    modal.remove();
-    showToast('Zadanie dodane!');
-    loadProfile();
+    if(!title){ showToast('Wpisz tytuł',true); return; }
+    await getDb().collection('tasks').add({userId:cu.uid,title:title,desc:document.getElementById('task-desc').value.trim(),status:'todo',createdBy:cu.uid,createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+    modal.remove(); showToast('Zadanie dodane!'); loadProfile();
   };
 }
 
 async function cycleTaskStatus(tid) {
   var snap = await getDb().collection('tasks').doc(tid).get();
-  var curr = snap.data().status || 'todo';
-  var next = curr==='todo'?'doing':curr==='doing'?'done':'todo';
-  await getDb().collection('tasks').doc(tid).update({status: next});
+  var curr = snap.data().status||'todo';
+  await getDb().collection('tasks').doc(tid).update({status:curr==='todo'?'doing':curr==='doing'?'done':'todo'});
   loadProfile();
 }
 
@@ -2289,30 +2113,29 @@ async function deleteTask(tid) {
   loadProfile();
 }
 
+// ===== SEED VIDEOS =====
 var SEED_VIDEOS = [
-  {order:0, title:'Paintball — Zasady Bezpieczeństwa', description:'Obowiązkowe przed pierwszą zmianą. Zasady bezpieczeństwa na polu gry.', url:'https://youtu.be/J7FjG08PaUM?si=TW8DoA0SsuoGBVmG', duration:''},
+  {order:0, title:'Paintball — Zasady Bezpieczeństwa', description:'Obowiązkowe przed pierwszą zmianą.', url:'https://youtu.be/J7FjG08PaUM?si=TW8DoA0SsuoGBVmG', duration:''},
   {order:1, title:'ASG — Zasady Bezpieczeństwa', description:'Zasady bezpieczeństwa dla rozgrywek ASG.', url:'https://youtu.be/hPhUv_fAy4Y?si=k2bkAguStoHWUq23', duration:''},
   {order:2, title:'Scenariusze — Pole Leśne (Las)', description:'Podstawowe scenariusze gry na polu leśnym.', url:'https://youtu.be/wiM15eUFSwA?si=_4ZhYZChb981nElF', duration:''},
   {order:3, title:'Scenariusze — Pole z Oponami', description:'Podstawowe scenariusze gry na polu z oponami.', url:'https://youtu.be/38PwbktD4pU?si=MzbWLCM_WKBKCY4m', duration:''},
   {order:4, title:'Scenariusze — Pole Budynek Duży', description:'Podstawowe scenariusze gry w dużym budynku.', url:'https://youtu.be/ngYupVn2T-A?si=YZosKQKVmisfJCbN', duration:''},
-  {order:5, title:'Scenariusze — Pole Villa (Mały Budynek)', description:'Podstawowe scenariusze gry w małym budynku (Villa).', url:'https://youtu.be/SbeNNABp9V8?si=hCuSJxLPwoWjFjFK', duration:''},
+  {order:5, title:'Scenariusze — Pole Villa (Mały Budynek)', description:'Podstawowe scenariusze gry w małym budynku.', url:'https://youtu.be/SbeNNABp9V8?si=hCuSJxLPwoWjFjFK', duration:''},
 ];
 
 async function seedVideos() {
   try {
     var snap = await getDb().collection('videos').get();
-    if (snap.empty) {
+    if(snap.empty) {
       var batch = getDb().batch();
-      SEED_VIDEOS.forEach(function(v) {
-        var ref = getDb().collection('videos').doc();
-        batch.set(ref, Object.assign(v, {createdAt: firebase.firestore.FieldValue.serverTimestamp()}));
-      });
+      SEED_VIDEOS.forEach(function(v){ batch.set(getDb().collection('videos').doc(), Object.assign(v,{createdAt:firebase.firestore.FieldValue.serverTimestamp()})); });
       await batch.commit();
       showToast('Filmy szkoleniowe dodane!');
     }
-  } catch(e) { console.warn('seedVideos error:', e); }
+  } catch(e){ console.warn('seedVideos error:',e); }
 }
 
+// ===== REGISTER FUNCTIONS =====
 function _registerFunctions(){
   window.swPay2=swPayMain;
   window.sendInvoice2=sendInvoice3;
@@ -2339,11 +2162,12 @@ function _registerFunctions(){
   window.togRole2=togRole;
   window.approveUser2=approveUser;
   window.delUD2=delUD;
+  window.markInv2=markInv;
+  window.delVid2=delVid;
   window.loadCennik2=loadCennik;
   window.editCennikCat2=editCennikCat;
   window.addCennikCat2=addCennikCat;
   window.addCennikItem2=addCennikItem;
-  window.removeCennikItem2=removeCennikItem;
   window.saveCennikCat2=saveCennikCat;
   window.deleteCennikCat2=deleteCennikCat;
   window.openEvDetail2=openEvDetail;
@@ -2353,11 +2177,7 @@ function _registerFunctions(){
   window.deleteTask2=deleteTask;
   window.openAvatarPicker2=openAvatarPicker;
   window.loadProfile2=loadProfile;
-  window.markInv2=markInv;
-  window.delVid2=delVid;
 }
 
-function showToast(msg,err){var o=document.querySelector('.toast');if(o)o.remove();var t=document.createElement('div');t.className='toast'+(err?' toast-err':'');t.textContent=msg;document.body.appendChild(t);setTimeout(function(){t.style.opacity='0';setTimeout(function(){if(t.parentNode)t.remove();},300);},2800);}
+function showToast(msg,err){var o=document.querySelector('.toast');if(o)o.remove();var t=document.createElement('div');t.className='toast'+(err?' toast-err':'');t.textContent=msg;document.body.appendChild(t);setTimeout(function(){t.style.opacity='0';setTimeout(function(){if(t.parentNode)t.remove();},300);},3000);}
 </script>
-</body>
-</html>
