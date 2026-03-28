@@ -2128,12 +2128,19 @@ async function loadProfile() {
     ratingDocs.slice(0,5).forEach(function(doc) {
       var r = doc.data();
       var stars = '⭐'.repeat(r.stars||0);
-      html += '<div style="padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.05)">';
-      html += '<div style="display:flex;justify-content:space-between;align-items:center">';
-      html += '<span style="font-size:16px">'+stars+'</span>';
-      html += '<span style="font-size:11px;color:var(--muted)">'+(r.month||'')+'</span>';
+      var starsNum = r.stars || 0;
+      var starsRow = '';
+      for(var si=1;si<=5;si++) {
+        starsRow += '<span style="font-size:20px;opacity:'+(si<=starsNum?'1':'0.2')+'">⭐</span>';
+      }
+      html += '<div style="padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.05)">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">';
+      html += '<div>'+starsRow+'</div>';
+      html += '<span style="font-size:11px;color:var(--muted);background:var(--surface);padding:2px 8px;border-radius:10px">'+(r.month||'')+'</span>';
       html += '</div>';
-      if(r.comment) html += '<div style="font-size:13px;color:#ccc;margin-top:4px;font-style:italic">"'+r.comment+'"</div>';
+      if(r.comment) {
+        html += '<div style="font-size:13px;color:#ddd;font-style:italic;padding:6px 10px;background:rgba(255,255,255,0.04);border-left:2px solid var(--accent);border-radius:4px">'+r.comment+'</div>';
+      }
       html += '</div>';
     });
     html += '</div>';
