@@ -2155,6 +2155,64 @@ async function seedVideos() {
 }
 
 // ===== REGISTER FUNCTIONS =====
+// ===== PUSH NOTIFICATIONS / FCM =====
+var VAPID_KEY = 'BG9N9V8yhj4v13XY4RKqW6uCaAwOFWG3EcIBO9qIRNwBOTkNaS2yi5jMc9l9_p1XyrYYRKsXI-4fbiIY8do4560';
+var messaging = null;
+
+function initMessaging() {
+  try {
+    if (typeof firebase !== 'undefined' && firebase.messaging) {
+      messaging = firebase.messaging();
+    }
+  } catch(e) { console.warn('Messaging not supported:', e); }
+}
+
+async function requestNotificationPermission() {
+  if (!messaging) return;
+  try {
+    var permission = await Notification.requestPermission();
+    if (permission === 'granted') {
+      var token = await messaging.getToken({ vapidKey: VAPID_KEY });
+      if (token && cu) {
+        await getDb().collection('users').doc(cu.uid).update({ fcmToken: token });
+      }
+    }
+  } catch(e) { console.warn('Notification permission error:', e); }
+}
+
+async function sendPushToAdmin(title, body) {
+  try {
+    await getDb().collection('notifications').add({
+      title: title, body: body,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      read: false,
+      fromUser: cud ? cud.firstName + ' ' + cud.lastName : 'Instruktor'
+    });
+  } catch(e) { console.warn('Notification error:', e); }
+}
+
+function listenForNotifications() {
+  if (!isAdmin) return;
+  getDb().collection('notifications').where('read','==',false)
+  .onSnapshot(function(snap) {
+    snap.docChanges().forEach(function(change) {
+      if (change.type === 'added') {
+        var data = change.doc.data();
+        if (data.createdAt) {
+          var ts = data.createdAt.toDate ? data.createdAt.toDate() : new Date();
+          if ((Date.now() - ts.getTime()) / 1000 < 10) {
+            if (Notification.permission === 'granted') {
+              new Notification(data.title, { body: data.body });
+            }
+            showToast('🔔 ' + data.title + ': ' + data.body);
+            change.doc.ref.update({ read: true });
+          }
+        }
+      }
+    });
+  });
+}
+
 function openUserProfile(uid) {
   // Open profile page for specific user (admin view)
   window._profileUid = uid;
