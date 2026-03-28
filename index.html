@@ -2017,11 +2017,14 @@ async function loadProfile() {
   if(viewingOther) {
     html += '<div style="margin-bottom:8px"><button id="back-to-admin" style="background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer">← Wróć do listy użytkowników</button></div>';
   }
-  html += '<div class="profile-avatar" id="avatar-btn">'+avatar+'</div>';
+  html += '<div style="text-align:center;flex-shrink:0">';
+  html += '<div class="profile-avatar" id="avatar-btn" title="Kliknij aby zmienić">'+avatar+'</div>';
+  html += '<div style="font-size:10px;color:var(--muted);margin-top:4px;text-align:center">zmień</div>';
+  html += '</div>';
   html += '<div style="flex:1"><div style="font-weight:900;font-size:22px">'+udata.firstName+' '+udata.lastName+'</div>';
   html += '<div style="font-size:13px;color:var(--muted)">'+udata.email+'</div>';
-  if(phone) html += '<div style="font-size:14px;color:var(--accent);margin-top:4px">📞 '+phone+'</div>';
-  if(avgRating) html += '<div style="margin-top:6px;font-size:15px">⭐ '+avgRating+' <span style="font-size:12px;color:var(--muted)">('+ratings.length+' ocen)</span></div>';
+  html += '<div style="font-size:14px;color:'+(phone?'var(--accent)':'var(--muted)')+';margin-top:4px">📞 '+(phone||'brak numeru')+'</div>';
+  html += '<div style="margin-top:6px;font-size:15px">'+(avgRating?'⭐ '+avgRating:'⭐ brak ocen')+' <span style="font-size:12px;color:var(--muted)">'+(ratings.length?'('+ratings.length+' ocen)':'')+'</span></div>';
   html += '</div></div>';
   html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">';
   html += '<div style="background:var(--surface2);border-radius:12px;padding:14px;text-align:center"><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Ten miesiąc</div><div style="font-size:28px;font-weight:900;color:var(--accent)">'+mH+'h '+mM+'m</div><div style="font-size:12px;color:var(--muted)">'+monthShifts.length+' zmian</div></div>';
@@ -2063,14 +2066,13 @@ async function loadProfile() {
     html += '</div><button id="save-rating-btn" style="background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer">Zapisz ocenę</button></div>';
   }
   el.innerHTML = html;
-  document.getElementById('avatar-btn').onclick = function(){ openAvatarPicker(uid, avatar); };
+  // Attach event listeners
+  var avatarBtn = document.getElementById('avatar-btn');
+  if(avatarBtn) avatarBtn.onclick = function(){ openAvatarPicker(uid, avatar); };
   var backBtn = document.getElementById('back-to-admin');
   if(backBtn) backBtn.onclick = function(){ window._profileUid=null; swAdm2('adm-users'); };
-  document.getElementById('add-task-btn').onclick = function(){ openAddTask(); };
-  } catch(err) {
-    console.error('loadProfile error:', err);
-    el.innerHTML = '<div class="empty" style="color:var(--accent2)">Błąd ładowania profilu: ' + err.message + '</div>';
-  }
+  var addTaskBtn = document.getElementById('add-task-btn');
+  if(addTaskBtn) addTaskBtn.onclick = function(){ openAddTask(); };
   el.addEventListener('click', function(e) {
     var btn = e.target.closest('[data-action]');
     if (!btn) return;
@@ -2098,6 +2100,10 @@ async function loadProfile() {
       showToast('Ocena zapisana!');
       loadProfile();
     };
+  }
+  } catch(err) {
+    console.error('loadProfile error:', err);
+    el.innerHTML = '<div class="empty" style="color:var(--accent2)">Błąd: ' + err.message + '</div>';
   }
 }
 
