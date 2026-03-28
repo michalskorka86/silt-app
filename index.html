@@ -899,7 +899,7 @@ function showPage3(name){
   if(name==='orders')loadOrders();
   if(name==='notes')loadNotes();
   if(name==='cennik'){if(window.loadCennik2)window.loadCennik2();else loadCennik();}
-  if(name==='profile')loadProfile();
+  if(name==='profile'){if(window.loadProfile2)window.loadProfile2();}
   if(name==='admin'&&isAdmin)swAdm('adm-shifts');
 }
 
@@ -1567,7 +1567,10 @@ async function syncFromGcal() {
     var toDelete = oldSnap.docs.filter(function(doc) {
       var d = doc.data();
       if (!d.gcalEventId) return false; // keep manually added
-      var date = new Date(d.date);
+      if (!d.date) return false;
+      // Parse date string YYYY-MM-DD as local date
+      var parts = d.date.split('-');
+      var date = new Date(parseInt(parts[0]), parseInt(parts[1])-1, parseInt(parts[2]));
       return date < cutoff;
     });
     for (var di = 0; di < toDelete.length; di++) {
@@ -1676,13 +1679,11 @@ async function syncFromGcal() {
           detectedExtras = detectedExtras.filter(function(x){ return x !== 'Grill'; });
         }
         // Check for deposit - but NOT if preceded by "bez"
-var hasDeposit = (
-  /zadatek/.test(searchText) ||
-  /zaliczka/.test(searchText) ||
-  /wplacono/.test(searchText) ||
-  /byl zal[^i]/.test(searchText) ||
-  /wplacil/.test(searchText)
-) && !/bez zal/.test(searchText) && !/nie ma zal/.test(searchText) && !/brak zal/.test(searchText);
+// Deposit: positive keywords
+var depPos = /zadatek|zaliczka|wplacono|wplacil|zadatku/.test(searchText);
+// Negative keywords (no deposit)
+var depNeg = /bez zal|bez zadatku|brak zal|brak zadatku|nie ma zal|nie bylo zal|nie wplacono/.test(searchText);
+var hasDeposit = depPos && !depNeg;
 
         var evType = type;
         // Determine which type based on calId
