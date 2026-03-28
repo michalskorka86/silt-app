@@ -1984,159 +1984,261 @@ function goProfile() { showPage2('profile'); }
 async function loadProfile() {
   var el = document.getElementById('profile-content');
   if (!el) return;
-  el.innerHTML = '<div class="empty">Ładowanie...</div>';
+  el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:200px"><div style="color:var(--accent);font-size:14px;letter-spacing:2px;text-transform:uppercase;animation:pulse 1.5s infinite">Ładowanie profilu...</div></div>';
   try {
-  var qbtn = document.getElementById('profile-quick-btn');
-  if(qbtn && udata) qbtn.innerHTML = (udata.avatar||'🎯') + ' ' + (udata.firstName||'Mój profil');
   var uid = (isAdmin && window._profileUid) ? window._profileUid : cu.uid;
   var viewingOther = !!(isAdmin && window._profileUid && window._profileUid !== cu.uid);
   var usnap = await getDb().collection('users').doc(uid).get();
   var udata = usnap.data() || {};
   var avatar = udata.avatar || '🎯';
   var phone = udata.phone || '';
-  var shiftSnap = await getDb().collection('shifts').get(); // filter client-side to avoid index requirement
+  var shiftSnap = await getDb().collection('shifts').get();
   var shifts = shiftSnap.docs.map(function(d){return Object.assign({id:d.id},d.data());}).filter(function(s){return s.userId===uid;});
   shifts.sort(function(a,b){
-    var ta = a.startTime ? (a.startTime.toDate ? a.startTime.toDate().getTime() : new Date(a.startTime).getTime()) : 0;
-    var tb = b.startTime ? (b.startTime.toDate ? b.startTime.toDate().getTime() : new Date(b.startTime).getTime()) : 0;
-    return tb - ta;
+    var ta=a.startTime?(a.startTime.toDate?a.startTime.toDate().getTime():new Date(a.startTime).getTime()):0;
+    var tb=b.startTime?(b.startTime.toDate?b.startTime.toDate().getTime():new Date(b.startTime).getTime()):0;
+    return tb-ta;
   });
   var now = new Date();
   var monthKey = now.getFullYear()+'-'+(now.getMonth()+1);
   var monthShifts = shifts.filter(function(s){
-    var d = s.startTime ? (s.startTime.toDate ? s.startTime.toDate() : new Date(s.startTime)) : null;
-    return d && d.getFullYear()===now.getFullYear() && d.getMonth()===now.getMonth();
+    var d=s.startTime?(s.startTime.toDate?s.startTime.toDate():new Date(s.startTime)):null;
+    return d&&d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth();
   });
   var totalMinMonth = monthShifts.reduce(function(acc,s){return acc+(s.duration||0);},0);
-  var mH = Math.floor(totalMinMonth/60), mM = totalMinMonth%60;
+  var mH=Math.floor(totalMinMonth/60), mM=totalMinMonth%60;
   var totalMin = shifts.reduce(function(acc,s){return acc+(s.duration||0);},0);
-  var tH = Math.floor(totalMin/60), tM = totalMin%60;
-  var ratingSnap = await getDb().collection('ratings').get(); // filter client-side
-  var ratings = ratingSnap.docs.filter(function(d){return d.data().userId===uid;}).map(function(d){return d.data().stars||0;});
-  var avgRating = ratings.length ? (ratings.reduce(function(a,b){return a+b;},0)/ratings.length).toFixed(1) : null;
-  var taskSnap = await getDb().collection('tasks').get(); // filter client-side
+  var tH=Math.floor(totalMin/60), tM=totalMin%60;
+  var ratingSnap = await getDb().collection('ratings').get();
+  var ratingDocs = ratingSnap.docs.filter(function(d){return d.data().userId===uid;});
+  var ratings = ratingDocs.map(function(d){return d.data().stars||0;});
+  var avgRating = ratings.length?(ratings.reduce(function(a,b){return a+b;},0)/ratings.length).toFixed(1):null;
+  var taskSnap = await getDb().collection('tasks').get();
   var tasks = taskSnap.docs.map(function(d){return Object.assign({id:d.id},d.data());}).filter(function(t){return t.userId===uid;});
   tasks.sort(function(a,b){
-    var ta = a.createdAt ? (a.createdAt.toDate ? a.createdAt.toDate().getTime() : 0) : 0;
-    var tb = b.createdAt ? (b.createdAt.toDate ? b.createdAt.toDate().getTime() : 0) : 0;
-    return tb - ta;
+    var ta=a.createdAt?(a.createdAt.toDate?a.createdAt.toDate().getTime():0):0;
+    var tb=b.createdAt?(b.createdAt.toDate?b.createdAt.toDate().getTime():0):0;
+    return tb-ta;
   });
+
   var html = '';
-  html += '<div class="profile-header">';
+
+  // === BACK BUTTON ===
   if(viewingOther) {
-    html += '<div style="margin-bottom:8px"><button id="back-to-admin" style="background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer">← Wróć do listy użytkowników</button></div>';
+    html += '<div style="margin-bottom:16px"><button id="back-to-admin" style="display:flex;align-items:center;gap:6px;background:var(--surface2);border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer">← Wróć do listy</button></div>';
   }
-  html += '<div style="text-align:center;flex-shrink:0">';
-  html += '<div class="profile-avatar" id="avatar-btn" title="Kliknij aby zmienić">'+avatar+'</div>';
-  html += '<div style="font-size:10px;color:var(--muted);margin-top:4px;text-align:center">zmień</div>';
+
+  // === HERO SECTION ===
+  html += '<div style="background:linear-gradient(135deg,#1a1a2e 0%,#0d0d1a 100%);border:1px solid var(--border);border-radius:20px;padding:28px 20px;margin-bottom:16px;text-align:center;position:relative;overflow:hidden">';
+  // Background accent
+  html += '<div style="position:absolute;top:-40px;right:-40px;width:150px;height:150px;background:var(--accent);opacity:.05;border-radius:50%"></div>';
+  html += '<div style="position:absolute;bottom:-30px;left:-30px;width:100px;height:100px;background:#4488ff;opacity:.05;border-radius:50%"></div>';
+  // Avatar
+  html += '<div id="avatar-btn" style="font-size:64px;width:90px;height:90px;background:var(--surface);border:3px solid var(--accent);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 12px;cursor:pointer;transition:transform .2s;position:relative;z-index:1" title="Zmień awatar">'+avatar+'</div>';
+  html += '<div style="font-size:10px;color:var(--accent);letter-spacing:2px;text-transform:uppercase;margin-bottom:12px;opacity:.7">kliknij aby zmienić</div>';
+  // Name
+  html += '<div style="font-weight:900;font-weight:900;font-size:30px;text-transform:uppercase;letter-spacing:2px;margin-bottom:4px">'+udata.firstName+' '+udata.lastName+'</div>';
+  // Role badge
+  var roleLabel = udata.role==='admin'?'★ Administrator':'Instruktor';
+  var roleColor = udata.role==='admin'?'var(--accent)':'#4488ff';
+  html += '<div style="display:inline-block;padding:4px 16px;border-radius:20px;border:1px solid '+roleColor+';color:'+roleColor+';font-size:12px;font-weight:700;letter-spacing:1px;margin-bottom:12px">'+roleLabel+'</div>';
+  // Email & phone
+  html += '<div style="font-size:13px;color:var(--muted);margin-bottom:4px">'+udata.email+'</div>';
+  if(phone) html += '<div style="font-size:15px;color:var(--accent);font-weight:600">📞 '+phone+'</div>';
+  // Star rating
+  if(avgRating) {
+    html += '<div style="margin-top:12px;display:flex;align-items:center;justify-content:center;gap:6px">';
+    html += '<div style="font-size:22px">'+('⭐'.repeat(Math.round(parseFloat(avgRating))))+'</div>';
+    html += '<div style="font-size:18px;font-weight:900;color:var(--accent)">'+avgRating+'</div>';
+    html += '<div style="font-size:12px;color:var(--muted)">/5 ('+ratings.length+' ocen)</div>';
+    html += '</div>';
+  } else {
+    html += '<div style="margin-top:12px;font-size:13px;color:var(--muted)">Brak ocen</div>';
+  }
   html += '</div>';
-  html += '<div style="flex:1"><div style="font-weight:900;font-size:22px">'+udata.firstName+' '+udata.lastName+'</div>';
-  html += '<div style="font-size:13px;color:var(--muted)">'+udata.email+'</div>';
-  html += '<div style="font-size:14px;color:'+(phone?'var(--accent)':'var(--muted)')+';margin-top:4px">📞 '+(phone||'brak numeru')+'</div>';
-  html += '<div style="margin-top:6px;font-size:15px">'+(avgRating?'⭐ '+avgRating:'⭐ brak ocen')+' <span style="font-size:12px;color:var(--muted)">'+(ratings.length?'('+ratings.length+' ocen)':'')+'</span></div>';
-  html += '</div></div>';
+
+  // === STATS GRID ===
   html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">';
-  html += '<div style="background:var(--surface2);border-radius:12px;padding:14px;text-align:center"><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Ten miesiąc</div><div style="font-size:28px;font-weight:900;color:var(--accent)">'+mH+'h '+mM+'m</div><div style="font-size:12px;color:var(--muted)">'+monthShifts.length+' zmian</div></div>';
-  html += '<div style="background:var(--surface2);border-radius:12px;padding:14px;text-align:center"><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Łącznie</div><div style="font-size:28px;font-weight:900;color:var(--accent)">'+tH+'h '+tM+'m</div><div style="font-size:12px;color:var(--muted)">'+shifts.length+' zmian</div></div>';
+  // This month
+  html += '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:14px;padding:16px;text-align:center">';
+  html += '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:2px;margin-bottom:8px">Ten miesiąc</div>';
+  html += '<div style="font-weight:900;font-size:36px;font-weight:900;color:var(--accent);line-height:1">'+mH+'h <span style="font-size:24px">'+mM+'m</span></div>';
+  html += '<div style="font-size:12px;color:var(--muted);margin-top:6px">'+monthShifts.length+' zmian</div>';
   html += '</div>';
+  // Total
+  html += '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:14px;padding:16px;text-align:center">';
+  html += '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:2px;margin-bottom:8px">Łącznie</div>';
+  html += '<div style="font-weight:900;font-size:36px;font-weight:900;color:#4488ff;line-height:1">'+tH+'h <span style="font-size:24px">'+tM+'m</span></div>';
+  html += '<div style="font-size:12px;color:var(--muted);margin-top:6px">'+shifts.length+' zmian</div>';
+  html += '</div>';
+  html += '</div>';
+
+  // === RECENT SHIFTS ===
   if(shifts.length) {
-    html += '<div class="section-title" style="margin-bottom:8px">Ostatnie zmiany</div>';
+    html += '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:16px">';
+    html += '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:2px;margin-bottom:12px">Ostatnie zmiany</div>';
     shifts.slice(0,5).forEach(function(s) {
-      var d = s.startTime ? (s.startTime.toDate ? s.startTime.toDate() : new Date(s.startTime)) : null;
-      var dateStr = d ? d.toLocaleDateString('pl-PL') : '?';
-      var dur = s.duration ? Math.floor(s.duration/60)+'h '+s.duration%60+'m' : '?';
-      html += '<div style="display:flex;justify-content:space-between;padding:10px 12px;background:var(--surface2);border-radius:8px;margin-bottom:6px"><span style="font-size:14px">📅 '+dateStr+'</span><span style="font-weight:700;color:var(--accent)">'+dur+'</span></div>';
+      var d=s.startTime?(s.startTime.toDate?s.startTime.toDate():new Date(s.startTime)):null;
+      var dateStr=d?d.toLocaleDateString('pl-PL',{weekday:'short',day:'numeric',month:'short'}):'?';
+      var dur=s.duration?Math.floor(s.duration/60)+'h '+s.duration%60+'m':'?';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.05)">';
+      html += '<span style="font-size:14px;color:var(--text)">📅 '+dateStr+'</span>';
+      html += '<span style="font-weight:900;font-weight:700;font-size:18px;color:var(--accent)">'+dur+'</span>';
+      html += '</div>';
     });
+    html += '</div>';
   }
-  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin:16px 0 8px"><div class="section-title" style="margin:0">Zadania</div>';
-  html += '<button id="add-task-btn" style="background:var(--accent);color:#000;border:none;border-radius:8px;padding:6px 14px;font-weight:700;font-size:13px;cursor:pointer">+ Dodaj</button></div>';
-  if(!tasks.length) { html += '<div class="empty">Brak zadań</div>'; }
-  else {
-    tasks.forEach(function(t) {
-      var sIcon = t.status==='done'?'✅':t.status==='doing'?'🔄':'⭕';
-      var sCls = t.status==='done'?'done':t.status==='doing'?'doing':'';
-      html += '<div class="task-card"><div class="task-status '+sCls+'" data-tid="'+t.id+'" data-action="cycle">'+sIcon+'</div>';
-      html += '<div style="flex:1"><div style="font-size:14px;font-weight:600'+(t.status==='done'?';text-decoration:line-through;opacity:.5':'')+'"">'+t.title+'</div>';
-      if(t.desc) html += '<div style="font-size:12px;color:var(--muted);margin-top:2px">'+t.desc+'</div>';
-      html += '<div style="font-size:11px;color:var(--muted);margin-top:4px">'+(t.status==='done'?'Zrealizowane':t.status==='doing'?'W trakcie':'Do zrobienia')+'</div></div>';
-      if(isAdmin||t.createdBy===cu.uid) html += '<button class="btn-sm bsd" style="padding:4px 8px;font-size:11px" data-tid="'+t.id+'" data-action="del">✕</button>';
+
+  // === TASKS ===
+  html += '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:16px">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
+  html += '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:2px">Zadania</div>';
+  html += '<button id="add-task-btn" style="background:var(--accent);color:#000;border:none;border-radius:8px;padding:6px 14px;font-weight:700;font-size:12px;cursor:pointer;letter-spacing:1px">+ DODAJ</button>';
+  html += '</div>';
+  if(!tasks.length) {
+    html += '<div style="text-align:center;padding:20px;color:var(--muted);font-size:14px">Brak zadań 🎯</div>';
+  } else {
+    var pending = tasks.filter(function(t){return t.status!=='done';});
+    var done = tasks.filter(function(t){return t.status==='done';});
+    (pending.concat(done)).forEach(function(t) {
+      var isDone = t.status==='done';
+      var isDoig = t.status==='doing';
+      var icon = isDone?'✅':isDoig?'🔄':'⭕';
+      var borderColor = isDone?'#22c55e':isDoig?'#f0a000':'var(--border)';
+      html += '<div class="task-card" style="border-color:'+borderColor+';opacity:'+(isDone?'.6':'1')+'">';
+      html += '<div class="task-status '+(isDone?'done':isDoig?'doing':'')+'" data-tid="'+t.id+'" data-action="cycle" style="font-size:18px;width:28px;height:28px">'+icon+'</div>';
+      html += '<div style="flex:1">';
+      html += '<div style="font-size:14px;font-weight:700'+(isDone?';text-decoration:line-through':'')+'">'+t.title+'</div>';
+      if(t.desc) html += '<div style="font-size:12px;color:var(--muted);margin-top:3px">'+t.desc+'</div>';
+      html += '<div style="font-size:11px;margin-top:4px;color:'+(isDone?'#22c55e':isDoig?'#f0a000':'var(--muted)')+'">'+
+        (isDone?'Zrealizowane ✓':isDoig?'W trakcie…':'Do zrobienia')+'</div>';
+      html += '</div>';
+      if(isAdmin||t.createdBy===cu.uid) {
+        html += '<button class="btn-sm bsd" style="padding:4px 8px;font-size:11px;align-self:flex-start" data-tid="'+t.id+'" data-action="del">✕</button>';
+      }
       html += '</div>';
     });
   }
-  if(isAdmin) {
-    html += '<div style="background:var(--surface2);border:1px solid var(--accent);border-radius:12px;padding:14px;margin-top:16px">';
-    html += '<div class="section-title" style="margin-bottom:10px;color:var(--accent)">★ Opcje Admina</div>';
-    html += '<label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Numer telefonu instruktora</label>';
-    html += '<div style="display:flex;gap:8px;margin-bottom:12px"><input id="profile-phone" value="'+(phone||'')+'" placeholder="123 456 789" style="flex:1;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px;font-size:14px">';
-    html += '<button id="save-phone-btn" style="background:var(--accent);color:#000;border:none;border-radius:8px;padding:8px 14px;font-weight:700;cursor:pointer">Zapisz</button></div>';
-    html += '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">Oceń pracę tego miesiąca</div>';
-    html += '<div style="display:flex;gap:4px;margin-bottom:10px" id="rating-stars">';
-    for(var ri=1;ri<=5;ri++) html += '<button class="star-btn" data-stars="'+ri+'" style="font-size:28px;cursor:pointer;opacity:.3;transition:opacity .15s,transform .15s;border:none;background:none;padding:2px;line-height:1">⭐</button>';
+  html += '</div>';
+
+  // === RECENT RATINGS (with comments) ===
+  if(ratingDocs.length) {
+    html += '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:16px">';
+    html += '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:2px;margin-bottom:12px">Historia ocen</div>';
+    ratingDocs.slice(0,5).forEach(function(doc) {
+      var r = doc.data();
+      var stars = '⭐'.repeat(r.stars||0);
+      html += '<div style="padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.05)">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center">';
+      html += '<span style="font-size:16px">'+stars+'</span>';
+      html += '<span style="font-size:11px;color:var(--muted)">'+(r.month||'')+'</span>';
+      html += '</div>';
+      if(r.comment) html += '<div style="font-size:13px;color:#ccc;margin-top:4px;font-style:italic">"'+r.comment+'"</div>';
+      html += '</div>';
+    });
     html += '</div>';
-    html += '<label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Komentarz do oceny (opcjonalnie)</label>';
-    html += '<textarea id="rating-comment" placeholder="np. Świetna praca, dobry kontakt z klientami..." style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px;font-size:13px;resize:none;min-height:60px;margin-bottom:10px"></textarea>';
-    html += '<button id="save-rating-btn" style="width:100%;padding:10px;background:var(--accent);color:#000;border:none;border-radius:8px;font-weight:700;font-size:14px;cursor:pointer">💾 Zapisz ocenę</button></div>';
   }
+
+  // === ADMIN PANEL ===
+  if(isAdmin) {
+    html += '<div style="background:linear-gradient(135deg,#0d1a0d,#0a0a0a);border:2px solid var(--accent);border-radius:14px;padding:18px;margin-bottom:16px">';
+    html += '<div style="font-weight:900;font-weight:900;font-size:18px;color:var(--accent);text-transform:uppercase;letter-spacing:2px;margin-bottom:16px">★ Panel Admina</div>';
+    // Phone
+    html += '<div style="margin-bottom:16px">';
+    html += '<label style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;display:block;margin-bottom:6px">Numer telefonu</label>';
+    html += '<div style="display:flex;gap:8px"><input id="profile-phone" value="'+(phone||'')+'" placeholder="123 456 789" style="flex:1;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:10px;font-size:15px">';
+    html += '<button id="save-phone-btn" style="background:var(--accent);color:#000;border:none;border-radius:8px;padding:10px 16px;font-weight:700;font-size:14px;cursor:pointer;white-space:nowrap">💾 Zapisz</button></div>';
+    html += '</div>';
+    // Rating
+    html += '<div style="border-top:1px solid rgba(255,255,255,0.1);padding-top:16px">';
+    html += '<label style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;display:block;margin-bottom:10px">Oceń pracę instruktora</label>';
+    html += '<div style="display:flex;gap:8px;margin-bottom:12px;justify-content:center" id="rating-stars">';
+    for(var ri=1;ri<=5;ri++) {
+      html += '<button class="star-btn" data-stars="'+ri+'" style="font-size:36px;cursor:pointer;opacity:.25;transition:opacity .15s,transform .15s;border:none;background:none;padding:4px;line-height:1">⭐</button>';
+    }
+    html += '</div>';
+    html += '<textarea id="rating-comment" placeholder="Komentarz do oceny (opcjonalnie)..." style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:10px;font-size:13px;resize:none;min-height:70px;margin-bottom:12px;box-sizing:border-box"></textarea>';
+    html += '<button id="save-rating-btn" style="width:100%;padding:13px;background:var(--accent);color:#000;border:none;border-radius:10px;font-weight:900;font-weight:900;font-size:16px;cursor:pointer;letter-spacing:1px;text-transform:uppercase">💾 Zapisz ocenę</button>';
+    html += '</div></div>';
+  }
+
   el.innerHTML = html;
-  // Attach event listeners
+
+  // Event listeners
   var avatarBtn = document.getElementById('avatar-btn');
   if(avatarBtn) avatarBtn.onclick = function(){ openAvatarPicker(uid, avatar); };
   var backBtn = document.getElementById('back-to-admin');
   if(backBtn) backBtn.onclick = function(){ window._profileUid=null; swAdm2('adm-users'); };
   var addTaskBtn = document.getElementById('add-task-btn');
   if(addTaskBtn) addTaskBtn.onclick = function(){ openAddTask(uid); };
+
   el.addEventListener('click', function(e) {
     var btn = e.target.closest('[data-action]');
-    if (!btn) return;
+    if(!btn) return;
     var action = btn.getAttribute('data-action');
     var tid = btn.getAttribute('data-tid');
-    if (action==='cycle') cycleTaskStatus(tid);
-    if (action==='del') deleteTask(tid);
+    if(action==='cycle') cycleTaskStatus(tid);
+    if(action==='del') deleteTask(tid);
   });
+
   if(isAdmin) {
-    document.getElementById('save-phone-btn').onclick = async function() {
+    var savePhoneBtn = document.getElementById('save-phone-btn');
+    if(savePhoneBtn) savePhoneBtn.onclick = async function() {
       var ph = document.getElementById('profile-phone').value.trim();
       await getDb().collection('users').doc(uid).update({phone:ph});
       showToast('Telefon zapisany!');
     };
+
     var selectedStars = 0;
-    document.getElementById('rating-stars').addEventListener('mouseover', function(e) {
-      var btn = e.target.closest('[data-stars]');
-      if(!btn) return;
-      var hover = parseInt(btn.getAttribute('data-stars'));
-      document.querySelectorAll('#rating-stars .star-btn').forEach(function(b,i){
-        b.style.opacity = i < hover ? '1' : '0.3';
-        b.style.transform = i < hover ? 'scale(1.15)' : 'scale(1)';
+    var starsContainer = document.getElementById('rating-stars');
+    if(starsContainer) {
+      starsContainer.addEventListener('mouseover', function(e) {
+        var btn = e.target.closest('[data-stars]');
+        if(!btn) return;
+        var hover = parseInt(btn.getAttribute('data-stars'));
+        document.querySelectorAll('#rating-stars .star-btn').forEach(function(b,i){
+          b.style.opacity = i < hover ? '1' : '0.25';
+          b.style.transform = i < hover ? 'scale(1.2)' : 'scale(1)';
+        });
       });
-    });
-    document.getElementById('rating-stars').addEventListener('mouseleave', function() {
-      document.querySelectorAll('#rating-stars .star-btn').forEach(function(b,i){
-        b.style.opacity = i < selectedStars ? '1' : '0.3';
-        b.style.transform = i < selectedStars ? 'scale(1.1)' : 'scale(1)';
+      starsContainer.addEventListener('mouseleave', function() {
+        document.querySelectorAll('#rating-stars .star-btn').forEach(function(b,i){
+          b.style.opacity = i < selectedStars ? '1' : '0.25';
+          b.style.transform = i < selectedStars ? 'scale(1.1)' : 'scale(1)';
+        });
       });
-    });
-    document.getElementById('rating-stars').onclick = function(e) {
-      var btn = e.target.closest('[data-stars]');
-      if(!btn) return;
-      selectedStars = parseInt(btn.getAttribute('data-stars'));
-      document.querySelectorAll('#rating-stars .star-btn').forEach(function(b,i){
-        b.style.opacity = i < selectedStars ? '1' : '0.3';
-        b.style.transform = i < selectedStars ? 'scale(1.1)' : 'scale(1)';
+      starsContainer.addEventListener('click', function(e) {
+        var btn = e.target.closest('[data-stars]');
+        if(!btn) return;
+        selectedStars = parseInt(btn.getAttribute('data-stars'));
+        document.querySelectorAll('#rating-stars .star-btn').forEach(function(b,i){
+          b.style.opacity = i < selectedStars ? '1' : '0.25';
+          b.style.transform = i < selectedStars ? 'scale(1.1)' : 'scale(1)';
+        });
       });
-    };
-    document.getElementById('save-rating-btn').onclick = async function() {
-      if(!selectedStars){ showToast('Wybierz ocenę',true); return; }
-      var comment = document.getElementById('rating-comment') ? document.getElementById('rating-comment').value.trim() : '';
-      await getDb().collection('ratings').add({userId:uid,stars:selectedStars,month:monthKey,comment:comment,byAdmin:cu.uid,createdAt:firebase.firestore.FieldValue.serverTimestamp()});
-      showToast('Ocena zapisana!');
+    }
+
+    var saveRatingBtn = document.getElementById('save-rating-btn');
+    if(saveRatingBtn) saveRatingBtn.onclick = async function() {
+      if(!selectedStars){ showToast('Wybierz ocenę gwiazdkową',true); return; }
+      var comment = document.getElementById('rating-comment').value.trim();
+      await getDb().collection('ratings').add({
+        userId:uid, stars:selectedStars, month:monthKey,
+        comment:comment, byAdmin:cu.uid,
+        createdAt:firebase.firestore.FieldValue.serverTimestamp()
+      });
+      showToast('Ocena zapisana! ⭐'.repeat(selectedStars));
+      selectedStars = 0;
       loadProfile();
     };
   }
+
   } catch(err) {
     console.error('loadProfile error:', err);
     el.innerHTML = '<div class="empty" style="color:var(--accent2)">Błąd: ' + err.message + '</div>';
   }
 }
+
 
 function openAvatarPicker(uid, current) {
   var ex = document.getElementById('avatar-modal'); if(ex) ex.remove();
